@@ -1,0 +1,11 @@
+version: 1
+active_id: conn_example_primary
+items:
+  - id: conn_example_primary
+    name: 飞连生产环境
+    scheme: https
+    host: feilian.example.com
+    port: 443
+    access_key_id: YOUR_FEILIAN_ACCESS_KEY
+    secret_ref: config
+    created_at: "2026-06-08T00:00:00+08:00"

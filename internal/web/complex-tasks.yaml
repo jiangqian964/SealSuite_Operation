@@ -1,0 +1,28 @@
+version: 1
+items:
+    - id: weekly-security-summary
+      name: 每周安全汇总
+      execution_mode: manual
+      steps:
+        - id: s1
+          type: api_call
+          name: 查询设备
+    - id: complex_runtime_demo
+      name: 复杂任务试运行
+      execution_mode: workflow
+      steps:
+        - id: s1
+          type: api_call
+          name: 查用户
+          config:
+            body: {}
+            method: GET
+            path: /api/v1/users
+            path_params: {}
+            query: {}
+        - id: s2
+          type: output
+          name: 整理输出
+          config:
+            format: markdown
+            title: 运行结果

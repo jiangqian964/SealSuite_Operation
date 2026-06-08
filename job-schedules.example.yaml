@@ -1,0 +1,12 @@
+version: 1
+items:
+  - id: job_draft_department_list
+    draft_id: draft_department_list
+    target_type: task_draft
+    target_id: draft_department_list
+    enabled: true
+    webhook_config_id: webhook_example
+    webhook_enabled: false
+    schedule_type: interval
+    interval: 24h
+    timezone: Asia/Shanghai

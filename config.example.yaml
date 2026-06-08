@@ -1,0 +1,50 @@
+llm:
+  mock_mode: false
+  formatter:
+    enabled: false
+    provider: deepseek
+    base_url: https://api.deepseek.com
+    api_key: "YOUR_LLM_API_KEY"
+    model: deepseek-v4-flash
+    timeout: 30
+    system_prompt: ""
+    temperature: 0
+    max_tokens: 0
+    thinking: false
+    response_format: {}
+  planner:
+    enabled: false
+    provider: deepseek
+    base_url: https://api.deepseek.com
+    api_key: "YOUR_LLM_API_KEY"
+    model: deepseek-v4-flash
+    timeout: 30
+    system_prompt: ""
+    temperature: 0
+    max_tokens: 0
+    thinking: false
+    reasoning_effort: ""
+    response_format: {}
+log:
+  filename: ./logs/app.log
+  level: debug
+  max_age: 30
+  max_backups: 3
+  max_size: 100
+scheduler:
+  enabled: true
+  timezone: Asia/Shanghai
+sealsuite:
+  access_key: "YOUR_FEILIAN_ACCESS_KEY"
+  secret_key: "YOUR_FEILIAN_SECRET_KEY"
+  base_url: ""
+  host: feilian.example.com
+  scheme: https
+  port: 443
+  timeout: 30
+  retry_times: 3
+  mock_mode: false
+server:
+  bind: 127.0.0.1
+  mode: debug
+  port: 8080

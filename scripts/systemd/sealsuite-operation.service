@@ -1,0 +1,52 @@
+# ==============================================================
+# SealSuite Operation Systemd 服务配置
+# ==============================================================
+# 安装步骤：
+# 1. 将此文件复制到 /etc/systemd/system/sealsuite-operation.service
+# 2. 修改 WorkingDirectory 为实际的项目路径
+# 3. 执行: systemctl daemon-reload
+# 4. 启动: systemctl start sealsuite-operation
+# 5. 开机自启: systemctl enable sealsuite-operation
+# ==============================================================
+
+[Unit]
+Description=SealSuite Operation Service
+Documentation=https://github.com/your-org/sealsuite-operation
+After=network.target
+
+[Service]
+Type=simple
+User=sealsuite
+Group=sealsuite
+
+# 工作目录（请修改为实际的项目路径）
+WorkingDirectory=/opt/sealsuite-operation
+
+# 可执行文件路径
+ExecStart=/opt/sealsuite-operation/bin/sealsuite-operation
+
+# 重启策略
+Restart=always
+RestartSec=5
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# 环境配置
+Environment="GIN_MODE=release"
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sealsuite-operation
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sealsuite-operation
+
+[Install]
+WantedBy=multi-user.target

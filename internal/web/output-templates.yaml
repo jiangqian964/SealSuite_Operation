@@ -1,0 +1,7 @@
+version: 1
+items:
+    - id: out_users_summary
+      name: 用户汇总输出模板
+      format: markdown
+      title: 用户汇总
+      content: '# 用户汇总'

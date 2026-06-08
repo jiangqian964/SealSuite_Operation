@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>飞连运维控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">飞连运维控制台</div>
+      <div class="muted" id="version"></div>
+    </header>
+
+    <div class="layout">
+      <nav class="sidebar">
+        <button class="navbtn active" data-view="dashboard">Dashboard</button>
+        <button class="navbtn" data-view="connection">连接设置</button>
+        <button class="navbtn" data-view="jobs">Jobs</button>
+        <button class="navbtn" id="btn-open-templates" data-view="templates">飞连API列表</button>
+        <button class="navbtn" data-view="api">API 工具箱</button>
+        <button class="navbtn" data-view="logs">Logs</button>
+      </nav>
+
+      <main class="content">
+        <section class="view" id="view-dashboard">
+          <h2>Dashboard</h2>
+          <div class="card">
+            <div class="row">
+              <button id="btn-health">刷新健康状态</button>
+              <pre id="health" class="pre"></pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-connection">
+          <div class="page-title">
+            <div>
+              <h2>连接设置</h2>
+              <div class="subtitle">镜像目录同步三子页结构：飞连API配置、LLM_API配置、webhook配置。</div>
+            </div>
+          </div>
+
+          <div class="segmented conn-subnav" id="conn-subnav">
+            <button class="seg active" id="btn-sub-feilian" type="button">飞连API配置</button>
+            <button class="seg" id="btn-sub-llm" type="button">LLM_API配置</button>
+            <button class="seg" id="btn-sub-webhook" type="button">webhook配置</button>
+          </div>
+
+          <section id="subpage-feilian">
+            <div class="config-subpage-layout">
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">飞连_API 列表</div>
+                    <div class="subtitle">左侧记录列表骨架。</div>
+                  </div>
+                </div>
+                <div class="config-record-list">
+                  <div class="config-record-item config-record-item-active">
+                    <div style="font-weight:700">飞连配置列表占位</div>
+                    <div class="subtitle">后续交互逻辑会在此挂载。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">飞连_API 详情</div>
+                    <div class="subtitle">右侧详情工作台骨架。</div>
+                  </div>
+                </div>
+                <pre id="conn-out" class="pre">暂无飞连配置输出</pre>
+              </div>
+            </div>
+          </section>
+
+          <section id="subpage-llm" class="hidden">
+            <div class="config-subpage-layout">
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">LLM_API 列表</div>
+                    <div class="subtitle">左侧记录列表骨架。</div>
+                  </div>
+                </div>
+                <div class="config-record-list">
+                  <div class="config-record-item config-record-item-active">
+                    <div style="font-weight:700">LLM 配置列表占位</div>
+                    <div class="subtitle">后续任务会替换为真实列表。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">LLM_API 详情</div>
+                    <div class="subtitle">右侧详情工作台骨架。</div>
+                  </div>
+                </div>
+                <pre id="llm-out" class="pre">暂无 LLM 配置输出</pre>
+              </div>
+            </div>
+          </section>
+
+          <section id="subpage-webhook" class="hidden">
+            <div class="config-subpage-layout">
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">webhook 列表</div>
+                    <div class="subtitle">左侧记录列表骨架。</div>
+                  </div>
+                </div>
+                <div class="config-record-list">
+                  <div class="config-record-item config-record-item-active">
+                    <div style="font-weight:700">webhook 配置占位</div>
+                    <div class="subtitle">用于镜像目录同步结构。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">webhook 详情</div>
+                    <div class="subtitle">右侧详情工作台骨架。</div>
+                  </div>
+                </div>
+                <pre class="pre">暂无 webhook 输出</pre>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view hidden" id="view-jobs">
+          <h2>Jobs</h2>
+          <div class="card">
+            <div class="row">
+              <button id="btn-jobs">刷新任务列表</button>
+              <button id="btn-reload">Reload</button>
+            </div>
+            <pre id="jobs" class="pre"></pre>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-templates">
+          <div class="page-title">
+            <div>
+              <h2>飞连API列表</h2>
+              <div class="subtitle">管理/测试飞连 OpenAPI 模板，并在右侧查看独立执行输出。</div>
+            </div>
+            <div class="panel-actions">
+              <button class="btn" id="btn-templates-refresh">刷新</button>
+              <button class="btn primary" id="btn-template-create-2">新增模板</button>
+            </div>
+          </div>
+
+          <div class="grid templates-split">
+            <div class="card" id="api-task-definition-card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">飞连API列表</div>
+                  <div class="subtitle">支持按 id/name/category 搜索；点击“测试”结果会写入右侧输出窗口。</div>
+                </div>
+                <div class="panel-actions">
+                  <input id="tpl-filter-2" placeholder="按 id/name/category 过滤" />
+                </div>
+              </div>
+              <table class="table" id="tpl-table">
+                <thead><tr><th>id</th><th>category</th><th>method</th><th>path</th><th>actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">模板详情</div>
+                  <div class="subtitle">展示当前选中模板的只读 JSON。</div>
+                </div>
+              </div>
+              <pre class="pre" id="tpl-detail">请选择一个模板</pre>
+            </div>
+
+            <div class="card tpl-out-card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">执行输出</div>
+                  <div class="subtitle">模板测试的响应/错误会固定显示在此处。</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn" id="btn-tpl-out-copy">复制</button>
+                  <button class="btn" id="btn-tpl-out-clear">清空</button>
+                </div>
+              </div>
+              <pre class="pre" id="tpl-out">暂无输出</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-api">
+          <h2>API 工具箱</h2>
+          <div class="grid">
+            <div class="card" id="api-task-list-card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">任务列表</div>
+                  <div class="subtitle">展示已保存的飞连API任务草稿，可直接测试、创建周期任务、编辑或删除。</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn" id="btn-api-tasks-refresh">刷新</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>搜索任务</label>
+                <input id="api-task-filter" placeholder="按 id / 名称 / template_id 过滤" />
+              </div>
+              <div id="api-task-list" class="subtitle">暂无任务草稿</div>
+            </div>
+
+            <div class="card">
+              <h3>通用调试器</h3>
+              <div class="row">
+                <label>template_id <input id="exec-template" placeholder="例如 users_list" /></label>
+              </div>
+              <div class="row">
+                <label>method <input id="exec-method" placeholder="GET/POST/PUT..." /></label>
+                <label>path <input id="exec-path" placeholder="/api/v1/..." /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1">query(JSON) <input id="exec-query" placeholder='{"page":"1"}' /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1">path_params(JSON) <input id="exec-path-params" placeholder='{"user_id":"1"}' /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1">body(JSON)</label>
+              </div>
+              <textarea id="exec-body" rows="6" placeholder='{"__raw_json__":{}}'></textarea>
+              <div class="row">
+                <button id="btn-preview">Preview（dry-run/变更预览）</button>
+                <button id="btn-exec">Execute</button>
+              </div>
+              <h4>输出</h4>
+              <pre id="api-out" class="pre"></pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-logs">
+          <h2>Logs</h2>
+          <div class="card">
+            <div class="row">
+              <label>tail <input id="log-tail" value="2000" /></label>
+              <button id="btn-logs">刷新日志</button>
+            </div>
+            <pre id="logs" class="pre"></pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

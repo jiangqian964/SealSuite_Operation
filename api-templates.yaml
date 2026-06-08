@@ -1,0 +1,12 @@
+version: 1
+templates:
+    - id: devices_list
+      name: 设备-列表
+      category: device
+      method: GET
+      path: /api/open/v1/device/statistics
+    - id: department_list
+      name: 部门_列表
+      category: department
+      method: GET
+      path: /api/open/v1/department/list

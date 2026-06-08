@@ -1,0 +1,1116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>飞连运维控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span>飞连运维控制台</span>
+        <small class="muted" id="version"></small>
+      </div>
+      <div class="top-actions">
+        <span class="badge" title="服务健康状态">
+          <span class="dot" id="health-dot"></span>
+          <span id="health-text">unknown</span>
+        </span>
+        <button class="btn ghost" id="btn-health-quick">Health</button>
+        <button class="btn primary" id="btn-reload-quick">Reload</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="sidebar">
+        <div class="navgroup-title">Console</div>
+        <button class="navbtn active" data-view="dashboard">
+          <span class="ico">▦</span>
+          <span>Dashboard</span>
+        </button>
+        <button class="navbtn" data-view="connection">
+          <span class="ico">⛓</span>
+          <span>连接设置</span>
+        </button>
+        <button class="navbtn" id="btn-open-templates" data-view="templates">
+          <span class="ico">▤</span>
+          <span>飞连API列表</span>
+        </button>
+        <button class="navbtn" data-view="tasks">
+          <span class="ico">⌁</span>
+          <span>飞连任务列表</span>
+        </button>
+        <button class="navbtn" data-view="complex-tasks">
+          <span class="ico">◈</span>
+          <span>运营agent</span>
+        </button>
+        <button class="navbtn" data-view="logs">
+          <span class="ico">≋</span>
+          <span>Logs</span>
+        </button>
+      </nav>
+
+      <main class="content">
+        <section class="view" id="view-dashboard">
+          <div class="page-title">
+            <div>
+              <h2>Dashboard</h2>
+              <div class="subtitle">概览服务健康、任务与最近操作。</div>
+              <div class="hero-chips">
+                <span class="hero-chip">连接集中管理</span>
+                <span class="hero-chip">任务编排</span>
+                <span class="hero-chip">周期调度</span>
+                <span class="hero-chip">安全分析</span>
+              </div>
+            </div>
+            <div class="hero-side-note">
+              <div class="hero-side-title">飞连安全运营控制台</div>
+              <div class="subtitle">连接、任务、调度与运营agent 全部集中在一个界面内完成。</div>
+            </div>
+          </div>
+          <div class="hero-stats hero-stats-4">
+            <div class="stat-card stat-card-emphasis">
+              <div class="stat-label">服务健康</div>
+              <div class="stat-value" id="health-big">—</div>
+              <div class="row" style="margin-top:8px">
+                <div class="pill" id="health-pill">unknown</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">核心模块</div>
+              <div class="stat-value">5</div>
+              <div class="stat-meta">连接设置 / 飞连任务列表 / 运营agent / Logs</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">双模型角色</div>
+              <div class="stat-value">2</div>
+              <div class="stat-meta">Planner 与 Formatter 双角色协同</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">运行模式</div>
+              <div class="stat-value">3</div>
+              <div class="stat-meta">单次任务、周期任务与运营agent 工作流</div>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="card" id="api-task-definition-card">
+              <div class="row" style="justify-content:space-between">
+                <div>
+                  <div class="subtitle">健康状态</div>
+                  <div style="font-size:28px;font-weight:800;letter-spacing:.2px">运行态检查</div>
+                </div>
+                <div class="pill">核心链路</div>
+              </div>
+              <div class="row">
+                <button class="btn" id="btn-health">刷新</button>
+              </div>
+              <pre id="health" class="pre"></pre>
+            </div>
+            <div class="card">
+              <div class="subtitle">快速操作</div>
+              <div class="row">
+                <button class="btn primary" id="btn-open-connection">配置连接</button>
+                <button class="btn" id="btn-open-api">打开飞连任务列表</button>
+                <button class="btn" id="btn-open-jobs">查看定时任务清单</button>
+              </div>
+              <div class="subtitle">提示：写入类操作建议先做 Preview（dry-run / diff）。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-connection">
+          <div class="page-title">
+            <div>
+              <h2>连接设置（API 配置中心）</h2>
+              <div class="subtitle">将连接配置拆分为飞连API配置、LLM_API配置、webhook配置三个子页面；每个子页面统一采用左侧记录列表、右侧详情工作台的结构骨架。</div>
+            </div>
+          </div>
+          <div class="hero-stats hero-stats-3">
+            <div class="stat-card stat-card-compact">
+              <div class="stat-label">配置子页</div>
+              <div class="stat-value">3</div>
+              <div class="stat-meta">飞连API、LLM_API、webhook 分区维护</div>
+            </div>
+            <div class="stat-card stat-card-compact">
+              <div class="stat-label">统一布局</div>
+              <div class="stat-value">2</div>
+              <div class="stat-meta">左侧列表导航 + 右侧详情工作台</div>
+            </div>
+            <div class="stat-card stat-card-compact">
+              <div class="stat-label">运行方式</div>
+              <div class="stat-value">Hot</div>
+              <div class="stat-meta">保留现有热更新与输出区域，后续逐步补齐交互行为</div>
+            </div>
+          </div>
+
+          <div id="conn-workbench" class="hidden" aria-hidden="true">
+            <span id="conn-workbench-type"></span>
+            <span id="conn-workbench-mode"></span>
+          </div>
+
+          <div class="segmented conn-subnav" id="conn-subnav">
+            <button class="seg active" id="btn-sub-feilian" type="button">飞连API配置</button>
+            <button class="seg" id="btn-sub-llm" type="button">LLM_API配置</button>
+            <button class="seg" id="btn-sub-webhook" type="button">webhook配置</button>
+          </div>
+
+          <section id="subpage-feilian">
+            <div class="config-subpage-layout">
+              <div class="card config-subpage-side">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">飞连_API 列表</div>
+                    <div class="subtitle">查看历史快照、切换 ACTIVE，并从左侧列表进入查看/编辑/新建工作台。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-conn-refresh">刷新</button>
+                    <button class="btn primary" id="btn-conn-create">新增</button>
+                  </div>
+                </div>
+                <div id="conn-list-feilian" class="config-record-list subtitle">暂无飞连_API 配置</div>
+              </div>
+
+              <div class="card config-subpage-detail">
+                <div id="conn-form-feilian" class="connection-form-shell">
+                  <div class="panel-head">
+                    <div>
+                      <div class="panel-title">飞连_API 工作台</div>
+                      <div class="subtitle">统一维护环境名称、连接地址与飞连 AccessKey 信息，查看态为只读，编辑/新建态可保存为新的 ACTIVE 快照。</div>
+                    </div>
+                    <div class="panel-actions">
+                      <button class="btn" id="btn-conn-load">加载当前 ACTIVE</button>
+                      <button class="btn" id="btn-conn-edit">切换编辑态</button>
+                      <button class="btn" id="btn-conn-test">测试连接</button>
+                      <button class="btn primary" id="btn-conn-save">保存并热更新</button>
+                    </div>
+                  </div>
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">基础信息</div>
+                        <div class="subtitle">填写环境名称和连接地址，便于后续快速切换。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:2">
+                        <label>名称（可选，用于历史清单显示）</label>
+                        <input id="conn-name" placeholder="例如：生产-飞连 / 测试环境" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>scheme</label>
+                        <input id="conn-scheme" placeholder="https" />
+                      </div>
+                      <div class="field" style="flex:2">
+                        <label>host（域名 / IP）</label>
+                        <input id="conn-host" placeholder="feilian.example.com 或 10.0.0.1" />
+                      </div>
+                      <div class="field">
+                        <label>port</label>
+                        <input id="conn-port" placeholder="443" />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">鉴权信息</div>
+                        <div class="subtitle">用于访问飞连开放 API 的凭证信息；历史记录只回填脱敏可展示字段，secret 仍需手工输入。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:1">
+                        <label>AccessKey ID</label>
+                        <input id="conn-ak" placeholder="AccessKey ID" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:1">
+                        <label>AccessKey Secret</label>
+                        <input id="conn-sk" placeholder="AccessKey Secret（保存后不回显）" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="result-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">飞连配置输出</div>
+                      <div class="subtitle">展示当前加载结果、连接测试与保存反馈。</div>
+                    </div>
+                  </div>
+                  <pre id="conn-out" class="pre"></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="subpage-llm" class="hidden">
+            <div class="config-subpage-layout">
+              <div class="card config-subpage-side">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">LLM_API 列表</div>
+                    <div class="subtitle">单条记录即一个可独立启用的 LLM_API；通过标签区分 Planner、Formatter 或业务自定义用途。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-llm-api-refresh">刷新</button>
+                    <button class="btn primary" id="btn-llm-api-create">新增</button>
+                  </div>
+                </div>
+                <div id="conn-list-llm" class="config-record-list subtitle">暂无 LLM_API 配置</div>
+              </div>
+
+              <div class="card config-subpage-detail">
+                <div id="conn-form-llm-api" class="connection-form-shell hidden">
+                  <div class="panel-head">
+                    <div>
+                      <div class="panel-title">LLM_API 工作台</div>
+                      <div class="subtitle">每条记录保存一组 provider/base_url/api_key/model 等参数；ACTIVE 记录会映射到当前默认运行时 LLM 配置。</div>
+                    </div>
+                    <div class="panel-actions">
+                      <button class="btn" id="btn-llm-load">加载当前 ACTIVE</button>
+                      <button class="btn" id="btn-llm-edit">切换编辑态</button>
+                      <button class="btn" id="btn-llm-test">测试 LLM</button>
+                      <button class="btn primary" id="btn-llm-save">保存配置</button>
+                    </div>
+                  </div>
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">基础信息</div>
+                        <div class="subtitle">每条 LLM_API 记录可以打多个标签，用于标记 Planner、Formatter 或其他业务用途。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>LLM_API ID</label>
+                        <input id="llm-api-id" placeholder="例如 llm_prod_main" />
+                      </div>
+                      <div class="field" style="flex:2">
+                        <label>LLM_API 名称</label>
+                        <input id="llm-api-name" placeholder="例如：生产主模型 / 测试回归模型" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:2">
+                        <label>tags</label>
+                        <input id="llm-api-tags" placeholder="Planner 模型, Formatter 模型, 自定义标签" />
+                      </div>
+                      <div class="field">
+                        <label>provider</label>
+                        <input id="llm-api-provider" placeholder="deepseek" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:2">
+                        <label>base_url</label>
+                        <input id="llm-api-base-url" placeholder="https://api.deepseek.com/v1" />
+                      </div>
+                      <div class="field">
+                        <label>model</label>
+                        <input id="llm-api-model" placeholder="deepseek-v3" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:2">
+                        <label>api_key</label>
+                        <input id="llm-api-api-key" placeholder="保存后不回显；留空则沿用已保存密钥" />
+                      </div>
+                      <div class="field">
+                        <label>timeout(s)</label>
+                        <input id="llm-api-timeout" placeholder="30" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>temperature</label>
+                        <input id="llm-api-temperature" placeholder="0.2" />
+                      </div>
+                      <div class="field">
+                        <label>max_tokens</label>
+                        <input id="llm-api-max-tokens" placeholder="2048" />
+                      </div>
+                      <div class="field">
+                        <label>reasoning_effort</label>
+                        <input id="llm-api-reasoning-effort" placeholder="medium / high" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>response_format.type</label>
+                        <input id="llm-api-response-format" placeholder="json_object" />
+                      </div>
+                      <div class="field">
+                        <label>enabled</label>
+                        <select id="llm-api-enabled">
+                          <option value="true" selected>true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label>thinking</label>
+                        <select id="llm-api-thinking">
+                          <option value="false" selected>false</option>
+                          <option value="true">true</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <label class="checkbox-line">
+                        <input type="checkbox" id="llm-api-activate" />
+                        <span>保存后设为 ACTIVE</span>
+                      </label>
+                    </div>
+                    <div class="field">
+                      <label>system_prompt</label>
+                      <textarea id="llm-api-system-prompt" rows="5" placeholder="通用系统提示词"></textarea>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="result-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">LLM 配置输出</div>
+                      <div class="subtitle">展示 LLM_API 加载、测试、保存和 ACTIVE 切换结果。</div>
+                    </div>
+                  </div>
+                  <pre id="llm-out" class="pre"></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="subpage-webhook" class="hidden">
+            <div class="config-subpage-layout">
+              <div class="card config-subpage-side">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">webhook 列表</div>
+                    <div class="subtitle">左侧查看所有 webhook 配置，点击记录即可在右侧编辑、测试或删除。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-webhook-refresh">刷新</button>
+                    <button class="btn primary" id="btn-webhook-create">新增</button>
+                  </div>
+                </div>
+                <div id="webhook-list" class="config-record-list subtitle">暂无 webhook 配置</div>
+              </div>
+
+              <div class="card config-subpage-detail">
+                <div class="form-section">
+                  <div class="panel-head">
+                    <div>
+                      <div class="panel-title">webhook 配置工作台</div>
+                      <div class="subtitle">填写 webhook-id、名称、请求地址、请求方法、请求头和 body 模板，并可直接发起测试推送。</div>
+                    </div>
+                    <div class="panel-actions">
+                      <button class="btn" id="btn-webhook-test">测试推送</button>
+                      <button class="btn danger" id="btn-webhook-delete">删除</button>
+                      <button class="btn primary" id="btn-webhook-save">保存</button>
+                    </div>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">基础字段</div>
+                        <div class="subtitle">新建时可填写自定义 webhook-id；保存后再次打开同一条记录时 ID 将保持只读。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>webhook-id</label>
+                        <input id="webhook-id" placeholder="例如 order_created_push" />
+                      </div>
+                      <div class="field" style="flex:2">
+                        <label>name</label>
+                        <input id="webhook-name" placeholder="例如：订单创建通知 / 飞书机器人推送" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field" style="flex:2">
+                        <label>url</label>
+                        <input id="webhook-url" placeholder="https://example.com/webhook" />
+                      </div>
+                    <div class="field">
+                      <label>provider</label>
+                      <select id="webhook-provider">
+                        <option value="generic" selected>generic</option>
+                        <option value="feishu_bot">feishu_bot</option>
+                      </select>
+                    </div>
+                      <div class="field">
+                        <label>method</label>
+                        <select id="webhook-method">
+                          <option value="POST" selected>POST</option>
+                          <option value="PUT">PUT</option>
+                          <option value="PATCH">PATCH</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">请求模板</div>
+                        <div class="subtitle">headers 和测试 payload 使用 JSON；generic 使用 body-template，feishu_bot 由系统自动生成飞书机器人 payload。</div>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <label>headers</label>
+                      <textarea id="webhook-headers" rows="6" placeholder='{"Content-Type":"application/json"}'></textarea>
+                    </div>
+                    <div class="field">
+                      <label>body-template</label>
+                      <textarea id="webhook-body-template" rows="8" placeholder='{"title":"{{source_name}}","message":"{{jsonString data}}"}'></textarea>
+                      <div id="webhook-provider-hint" class="subtitle">通用 webhook 使用自定义 body_template。</div>
+                    </div>
+                    <div class="field">
+                      <label>test-payload</label>
+                      <textarea id="webhook-test-payload" rows="8" placeholder='{"title":"测试推送","message":"hello webhook"}'></textarea>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="result-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">webhook 输出</div>
+                      <div class="subtitle">展示 webhook 列表刷新、保存、删除和测试推送的返回结果。</div>
+                    </div>
+                  </div>
+                  <pre id="webhook-out" class="pre">暂无 webhook 输出</pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="subtitle">说明：secret 保存后不会回显；若不想改 secret，可留空再保存。当前提交仅完成三子页结构与通用布局骨架。</div>
+        </section>
+
+        <section class="view hidden" id="view-tasks">
+          <div class="page-title">
+            <div>
+              <h2 id="task-page-title">单次/周期任务清单</h2>
+              <div class="subtitle" id="task-page-subtitle">配置单次或周期飞连 API 请求任务、输入参数、轻量处理、大模型调用与输出格式，并保存为任务草稿。</div>
+            </div>
+          </div>
+          <div class="segmented conn-subnav task-subnav" id="task-subpage-switcher">
+            <button class="seg active" id="btn-task-sub-once-cycle" type="button">单次/周期任务清单</button>
+            <button class="seg" id="btn-task-sub-schedule" type="button">定时任务清单</button>
+          </div>
+          <section class="task-subpage-screen" id="task-subpage-once-cycle">
+            <div class="alert-block">
+              <div class="alert-title">任务中心说明</div>
+              <div>单次/周期任务工作台已并入任务中心；从左侧任务卡片进入定时任务清单后，可继续补全调度管理配置。</div>
+            </div>
+            <div class="grid api-layout">
+              <div class="card" id="api-task-list-card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">任务列表</div>
+                    <div class="subtitle">展示已保存的单次/周期任务草稿，可直接测试、进入定时任务清单、编辑或删除。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-api-tasks-refresh">刷新</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label>搜索任务</label>
+                  <input id="api-task-filter" placeholder="按 id / 名称 / template_id 过滤" />
+                </div>
+                <div id="api-task-list" class="subtitle">暂无任务草稿</div>
+              </div>
+
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">单次/周期任务定义</div>
+                    <div class="subtitle">定义单次或周期执行的飞连 API 请求任务、测试链路，并保存为任务草稿供定时任务清单绑定时间计划。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-preview">Preview</button>
+                    <button class="btn primary" id="btn-exec">Execute</button>
+                    <button class="btn primary" id="btn-draft-save">保存为任务草稿</button>
+                  </div>
+                </div>
+                <div class="form-section">
+                  <div class="section-head">
+                    <div>
+                      <div class="section-title">任务基础信息</div>
+                      <div class="subtitle">定义这条单次/周期任务的身份、用途和执行模式。</div>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>草稿 ID</label>
+                      <input id="draft-id" placeholder="例如 draft_users_sync" />
+                      <div class="field-error" id="draft-id-error"></div>
+                    </div>
+                    <div class="field" style="flex:1">
+                      <label>草稿名称</label>
+                      <input id="draft-name" placeholder="例如 用户同步草稿" />
+                      <div class="field-error" id="draft-name-error"></div>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field">
+                      <label>模式</label>
+                      <select id="draft-mode">
+                        <option value="api_only">api_only</option>
+                        <option value="api_plus_process">api_plus_process</option>
+                        <option value="api_plus_llm">api_plus_llm</option>
+                        <option value="workflow">workflow</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field">
+                      <label>周期执行</label>
+                      <select id="draft-cycle-mode">
+                        <option value="once">仅本次</option>
+                        <option value="5min">5min</option>
+                        <option value="30min">30min</option>
+                        <option value="1h">1h</option>
+                        <option value="6h">6h</option>
+                        <option value="24h">24h</option>
+                        <option value="7day">7day</option>
+                        <option value="1month">1month</option>
+                        <option value="1year">1year</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label>任务次数</label>
+                      <input id="draft-run-count" type="number" min="1" value="1" />
+                    </div>
+                    <div class="field" style="flex:1.4">
+                      <label>结束时间</label>
+                      <input id="draft-run-until" type="date" />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>webhook 配置</label>
+                      <select id="draft-webhook-config-id">
+                        <option value="">不绑定 webhook</option>
+                      </select>
+                    </div>
+                    <label class="field" style="max-width:220px">
+                      <span>启用推送引用</span>
+                      <input id="draft-webhook-enabled" type="checkbox" />
+                    </label>
+                  </div>
+                  <div id="draft-webhook-auto-hint" class="subtitle"></div>
+                  <div class="row">
+                    <label class="checkbox-line">
+                      <input type="checkbox" id="exec-webhook-push-once" />
+                      <span>本次执行成功后也推送 webhook</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-section">
+                  <div class="section-head">
+                    <div>
+                      <div class="section-title">请求配置</div>
+                      <div class="subtitle">配置模板、方法、路径和请求参数。</div>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>template_id</label>
+                      <input id="exec-template" placeholder="例如 users_list" />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field">
+                      <label>method</label>
+                      <input id="exec-method" placeholder="GET/POST/PUT..." />
+                    </div>
+                    <div class="field" style="flex:2">
+                      <label>path</label>
+                      <input id="exec-path" placeholder="/api/open/v1/..." />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>query(JSON)</label>
+                      <input id="exec-query" placeholder='{"page":"1"}' />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>path_params(JSON)</label>
+                      <input id="exec-path-params" placeholder='{"user_id":"1"}' />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>body(JSON)</label>
+                    </div>
+                  </div>
+                  <textarea id="exec-body" rows="6" placeholder='{"__raw_json__":{}}'></textarea>
+                </div>
+                <div class="form-section">
+                  <div class="section-head">
+                    <div>
+                      <div class="section-title">处理与输出</div>
+                      <div class="subtitle">配置轻量处理、大模型调用和最终输出格式。</div>
+                    </div>
+                  </div>
+                  <div class="subtitle">处理逻辑</div>
+                  <textarea id="draft-transform" rows="5" placeholder='{"type":"json_map","rules":[]}'></textarea>
+                  <div class="subtitle">大模型调用</div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>模型选择</label>
+                      <select id="draft-llm-api-id">
+                        <option value="">使用 role 的默认模型</option>
+                      </select>
+                      <div id="draft-llm-api-hint" class="subtitle">未指定具体模型时，将按 role 使用运行时默认模型。</div>
+                    </div>
+                  </div>
+                  <textarea id="draft-llm" rows="5" placeholder='{"role":"formatter","prompt":"请总结结果"}'></textarea>
+                  <div class="subtitle">输出格式</div>
+                  <textarea id="draft-output" rows="5" placeholder='{"format":"markdown","title":"结果摘要"}'></textarea>
+                </div>
+                <div class="result-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">执行输出</div>
+                      <div class="subtitle">建议先 Preview / Execute 验证，再保存为任务草稿。</div>
+                    </div>
+                    <button class="btn ghost" id="btn-copy-out">Copy</button>
+                  </div>
+                  <pre id="api-out" class="pre"></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section class="task-subpage-screen hidden" id="task-subpage-schedule">
+            <div class="card toolbar-card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">筛选与操作</div>
+                  <div class="subtitle">按目标类型、调度类型和启用状态快速定位任务。</div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field" style="min-width:240px;flex:1">
+                  <label>搜索任务</label>
+                  <input id="jobs-search" placeholder="按调度 ID / 草稿 ID 搜索…" />
+                </div>
+                <div class="field" style="max-width:220px">
+                  <label>调度类型</label>
+                  <select id="jobs-filter-type">
+                    <option value="">全部类型</option>
+                    <option value="cron">cron</option>
+                    <option value="interval">interval</option>
+                  </select>
+                </div>
+                <div class="field" style="max-width:220px">
+                  <label>启用状态</label>
+                  <select id="jobs-filter-enabled">
+                    <option value="">全部状态</option>
+                    <option value="enabled">已启用</option>
+                    <option value="disabled">已禁用</option>
+                  </select>
+                </div>
+                <button class="btn" id="btn-jobs">刷新</button>
+                <button class="btn primary" id="btn-job-create">新建调度</button>
+                <button class="btn ghost" id="btn-reload">Reload</button>
+              </div>
+            </div>
+            <div class="grid jobs-layout" style="align-items:start">
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">调度列表</div>
+                    <div class="subtitle">每条记录绑定一个执行目标；这里主要管理开始时间、结束时间、周期、启停和轻量后处理。</div>
+                  </div>
+                  <div class="pill">运行态列表</div>
+                </div>
+                <table class="table" id="jobs-table">
+                  <thead>
+                    <tr>
+                      <th style="width:18%">schedule_id</th>
+                      <th style="width:18%">draft_id</th>
+                      <th style="width:14%">type</th>
+                      <th style="width:24%">plan</th>
+                      <th style="width:12%">enabled</th>
+                      <th>actions</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+                <div class="result-shell compact-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">原始响应（调试）</div>
+                      <div class="subtitle">保留底层返回，便于排查与对照。</div>
+                    </div>
+                  </div>
+                  <pre id="jobs" class="pre"></pre>
+                </div>
+              </div>
+              <div class="card" id="job-detail-card">
+                <div style="font-weight:750">调度详情</div>
+                <div class="subtitle" id="job-detail-empty">选择一条调度查看详情</div>
+                <div id="job-detail"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view hidden" id="view-job-editor">
+          <div class="page-title">
+            <div>
+              <h2>高级编辑调度</h2>
+              <div class="subtitle">支持表单模式与 JSON 模式，适合完整调度配置和任务草稿绑定。</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="row">
+              <button class="btn" id="btn-job-editor-form">表单模式</button>
+              <button class="btn" id="btn-job-editor-json-btn">JSON 模式</button>
+              <button class="btn ghost" id="btn-job-editor-back">返回飞连任务列表 · 定时任务清单</button>
+            </div>
+            <div id="job-editor-form"></div>
+            <textarea id="job-editor-json" class="hidden" rows="18" placeholder='{"id":"schedule_users_sync","draft_id":"draft_users_sync","enabled":true,"schedule_type":"cron","cron":"0 */30 * * * *"}'></textarea>
+            <div class="row">
+              <button class="btn primary" id="btn-job-editor-save">保存</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-templates">
+          <div class="page-title">
+            <div>
+              <h2>飞连API列表</h2>
+              <div class="subtitle">管理/测试飞连 OpenAPI 模板，并在右侧查看独立执行输出。</div>
+            </div>
+            <div class="panel-actions">
+              <button class="btn" id="btn-templates-refresh">刷新</button>
+              <button class="btn primary" id="btn-template-create-2">新增模板</button>
+            </div>
+          </div>
+
+          <div class="template-layout">
+            <div class="card template-list-pane">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">飞连API列表</div>
+                  <div class="subtitle">支持按 id/name/category 搜索；点击“测试”结果会写入右侧输出窗口。</div>
+                </div>
+                <div class="panel-actions">
+                  <input id="tpl-filter-2" placeholder="按 id/name/category 过滤" />
+                </div>
+              </div>
+              <table class="table" id="tpl-table">
+                <thead>
+                  <tr>
+                    <th>id</th>
+                    <th>category</th>
+                    <th>method</th>
+                    <th>path</th>
+                    <th>actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="template-detail-stack">
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">模板详情</div>
+                    <div class="subtitle">展示当前选中模板的只读 JSON。</div>
+                  </div>
+                </div>
+                <pre class="pre" id="tpl-detail">请选择一个模板</pre>
+              </div>
+
+              <div class="card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">执行输出</div>
+                    <div class="subtitle">模板测试的响应/错误会固定显示在此处。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-tpl-out-copy">复制</button>
+                    <button class="btn" id="btn-tpl-out-clear">清空</button>
+                  </div>
+                </div>
+                <pre class="pre" id="tpl-out">暂无输出</pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-complex-tasks">
+          <div class="page-title">
+            <div>
+              <h2>运营agent</h2>
+              <div class="subtitle">编排飞连任务列表结果、双模型与文本资产，用于自动化运营分析与告警。</div>
+              <div class="hero-chips">
+                <span class="hero-chip">自动分析</span>
+                <span class="hero-chip">双模型协同</span>
+                <span class="hero-chip">结构化告警</span>
+              </div>
+            </div>
+            <div class="hero-side-note">
+              <div class="hero-side-title">运营分析智能体</div>
+              <div class="subtitle">将飞连 API、调度结果与 LLM 结合，形成自动化分析链路。</div>
+            </div>
+          </div>
+          <div class="hero-stats hero-stats-3">
+            <div class="stat-card">
+              <div class="stat-label">核心步骤</div>
+              <div class="stat-value">4</div>
+              <div class="stat-meta">API 查询、数据处理、大模型调用、输出</div>
+            </div>
+            <div class="stat-card stat-card-emphasis">
+              <div class="stat-label">智能角色</div>
+              <div class="stat-value">2</div>
+              <div class="stat-meta">Planner 负责分析，Formatter 负责结构化表达</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">可插入资产</div>
+              <div class="stat-value">3</div>
+              <div class="stat-meta">SKILL.MD、SOUL.MD 与 Prompt 文本资产</div>
+            </div>
+          </div>
+          <div class="grid" style="grid-template-columns:.9fr 1.2fr .9fr; align-items:start">
+            <div class="card workbench-panel workbench-panel-side">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">运营agent 列表</div>
+                  <div class="subtitle">查看已有运营agent并进入详情。</div>
+                </div>
+                <div class="pill warn">Agents</div>
+              </div>
+              <div class="row">
+                <button class="btn primary" id="btn-complex-create">新建运营agent</button>
+              </div>
+              <div id="complex-task-list" class="subtitle">暂无运营agent</div>
+            </div>
+            <div class="card workbench-panel workbench-panel-main">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">步骤编排</div>
+                  <div class="subtitle">支持 API 查询、数据处理、大模型调用与输出四类步骤。</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn" id="btn-step-api">API 查询</button>
+                  <button class="btn" id="btn-step-transform">数据处理</button>
+                  <button class="btn" id="btn-step-llm">大模型调用</button>
+                  <button class="btn" id="btn-step-output">输出</button>
+                </div>
+              </div>
+              <div class="workbench-board">
+                <div class="workflow-rail">
+                  <div class="workflow-node">1. 数据接入</div>
+                  <div class="workflow-node">2. 处理与推理</div>
+                  <div class="workflow-node">3. 告警输出</div>
+                </div>
+                <div id="complex-task-steps" class="pre">[]</div>
+              </div>
+            </div>
+            <div class="card workbench-panel workbench-panel-side">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">任务配置</div>
+                  <div class="subtitle">v1 先支持任务元信息、执行模式和结构化步骤保存。</div>
+                </div>
+                <div class="pill">Config</div>
+              </div>
+              <div class="field">
+                <label>任务 ID</label>
+                <input id="complex-task-id" placeholder="例如 complex_user_audit" />
+              </div>
+              <div class="field">
+                <label>任务名称</label>
+                <input id="complex-task-name" placeholder="例如 用户审计增强任务" />
+              </div>
+              <div class="field">
+                <label>执行模式</label>
+                <select id="complex-task-mode">
+                  <option value="workflow">workflow</option>
+                  <option value="agent_assisted">agent_assisted</option>
+                  <option value="manual_checkpoint">manual_checkpoint</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>任务目标</label>
+                <textarea id="complex-task-goal" rows="4" placeholder="描述该运营agent的目标、产出、告警边界和执行规则"></textarea>
+              </div>
+              <div class="field">
+                <label>webhook 配置</label>
+                <select id="complex-task-webhook-config-id">
+                  <option value="">不绑定 webhook</option>
+                </select>
+              </div>
+              <label class="field">
+                <span>启用推送引用</span>
+                <input id="complex-task-webhook-enabled" type="checkbox" />
+              </label>
+              <div id="complex-task-webhook-auto-hint" class="subtitle"></div>
+              <div class="result-shell compact-shell">
+                <div class="result-head">
+                  <div>
+                    <div class="section-title">任务结构预览</div>
+                    <div class="subtitle">用于校验当前运营agent 的结构化配置。</div>
+                  </div>
+                </div>
+                <div id="complex-task-config" class="pre">{}</div>
+              </div>
+              <div class="panel-actions" style="margin-top:14px">
+                <button class="btn" id="btn-complex-run">试运行</button>
+                <button class="btn" id="btn-complex-save-draft">保存为任务草稿</button>
+                <button class="btn" id="btn-complex-save-output-template">保存为输出模板</button>
+                <button class="btn primary" id="btn-complex-save">保存运营agent</button>
+                <button class="btn danger" id="btn-complex-delete">删除运营agent</button>
+              </div>
+              <div class="result-shell">
+                <div class="result-head">
+                  <div>
+                    <div class="section-title">运行结果</div>
+                    <div class="subtitle">显示运营agent 的试运行摘要、步骤输出和错误信息。</div>
+                  </div>
+                  <div class="pill">Run</div>
+                </div>
+                <div id="complex-task-run-out" class="pre">暂无运行结果</div>
+              </div>
+              <div class="card" style="box-shadow:none; margin-top:12px">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">已保存输出模板</div>
+                    <div class="subtitle">可复用运营agent输出格式和结果内容。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-output-templates-refresh">刷新</button>
+                  </div>
+                </div>
+                <div id="output-template-list" class="subtitle">暂无输出模板</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-template-editor">
+          <div class="page-title">
+            <div>
+              <h2>模板编辑</h2>
+              <div class="subtitle">系统自动注入 Content-Type 与 Authorization，无需手工填写 Headers。</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="row">
+              <button class="btn" id="btn-template-editor-form">表单模式</button>
+              <button class="btn" id="btn-template-editor-json-btn">JSON 模式</button>
+              <button class="btn ghost" id="btn-template-editor-back">返回飞连任务列表</button>
+            </div>
+            <div id="template-editor-form"></div>
+            <textarea id="template-editor-json" class="hidden" rows="18" placeholder='{"id":"users_list","method":"GET","path":"/api/open/v1/users"}'></textarea>
+            <div class="row">
+              <button class="btn primary" id="btn-template-editor-save">保存模板</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-logs">
+          <div class="page-title">
+            <div>
+              <h2>Logs</h2>
+              <div class="subtitle">查看系统日志与执行日志，提高排障与运行追踪可读性。</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">日志总览</div>
+                <div class="subtitle">左侧查看执行日志摘要，右侧查看系统日志 tail，用于快速排障。</div>
+              </div>
+              <div class="panel-actions">
+                <div class="field" style="max-width: 220px; min-width:180px">
+                  <label>tail</label>
+                  <input id="log-tail" value="2000" />
+                </div>
+                <button class="btn" id="btn-logs">刷新</button>
+              </div>
+            </div>
+            <div class="grid" style="grid-template-columns:1fr 1fr">
+              <div class="result-shell compact-shell">
+                <div class="result-head">
+                  <div>
+                    <div class="section-title">执行日志</div>
+                    <div class="subtitle">关注目标、状态、耗时与错误原因。</div>
+                  </div>
+                  <div class="pill warn">Execution</div>
+                </div>
+                <div id="execution-logs" class="pre">暂无执行日志</div>
+              </div>
+              <div class="result-shell compact-shell">
+                <div class="result-head">
+                  <div>
+                    <div class="section-title">系统日志</div>
+                    <div class="subtitle">原始 tail 输出，适合定位服务端异常与链路问题。</div>
+                  </div>
+                  <div class="pill">System</div>
+                </div>
+                <pre id="logs" class="pre"></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast">
+      <div class="t-title" id="toast-title">提示</div>
+      <div class="t-msg" id="toast-msg"></div>
+    </div>
+
+    <div class="drawer hidden" id="job-drawer">
+      <div class="drawer-backdrop" id="job-drawer-backdrop"></div>
+      <div class="drawer-panel">
+        <div class="modal-head">
+          <div style="font-weight:800">快捷调度</div>
+          <button class="btn ghost" id="job-drawer-close">关闭</button>
+        </div>
+        <div id="job-drawer-body"></div>
+      </div>
+    </div>
+
+    <!-- Modal: 测试连接结果（Token + Probe） -->
+    <div class="modal hidden" id="modal">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="测试连接结果">
+        <div class="modal-head">
+          <div style="font-weight:800">测试连接结果</div>
+          <button class="btn ghost" id="modal-close">关闭</button>
+        </div>
+        <div class="grid" style="grid-template-columns: 1fr 1fr">
+          <div class="card" style="box-shadow:none">
+            <div style="font-weight:750">Token 获取</div>
+            <div class="subtitle">是否成功获取有效 access_token</div>
+            <pre class="pre" id="modal-token"></pre>
+          </div>
+          <div class="card" style="box-shadow:none">
+            <div style="font-weight:750">API 探测</div>
+            <div class="subtitle">使用 users_list（或 GET /api/v1/users）验证 Authorization 生效</div>
+            <pre class="pre" id="modal-probe"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

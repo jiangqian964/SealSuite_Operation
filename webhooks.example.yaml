@@ -1,0 +1,18 @@
+items:
+  - id: webhook_example
+    name: webhook_example
+    provider: generic
+    url: https://example.com/webhook
+    method: POST
+    headers:
+      Content-Type: application/json
+    auth_type: ""
+    body_template: |-
+      {
+        "title": "{{title}}",
+        "message": "{{message}}"
+      }
+    timeout_sec: 10
+    retry_count: 1
+    enabled: true
+    created_at: "2026-06-08T00:00:00+08:00"

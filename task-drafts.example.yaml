@@ -1,0 +1,26 @@
+version: 1
+items:
+  - id: draft_department_list
+    name: department_list 草稿
+    mode: workflow
+    cycle_mode: once
+    run_count: 1
+    source_template_id: department_list
+    webhook_config_id: webhook_example
+    webhook_enabled: false
+    input_config:
+      body: {}
+      method: GET
+      path: /api/open/v1/department/list
+      path_params: {}
+      query: {}
+      template_id: department_list
+    transform_config:
+      type: passthrough
+    llm_config:
+      llm_api_id: llm_prov_main
+      prompt: 请把输入结果整理成简洁中文摘要。
+      role: formatter
+    output_config:
+      format: markdown
+      title: 任务分析结果
