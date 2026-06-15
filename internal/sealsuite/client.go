@@ -3,32 +3,32 @@
 package sealsuite
 
 import (
-	"bytes"        // 字节缓冲区
+	"bytes"         // 字节缓冲区
 	"encoding/json" // JSON 编码解码
-	"fmt"          // 格式化输出
-	"io"           // I/O 操作
-	"net/http"     // HTTP 客户端
+	"fmt"           // 格式化输出
+	"io"            // I/O 操作
+	"net/http"      // HTTP 客户端
 	"net/url"
 	"strings"
 	"sync"
-	"time"         // 时间处理
+	"time" // 时间处理
 
 	// 项目内部包
-	"sealsuite-operation/internal/config"  // 配置管理
-	"sealsuite-operation/internal/logger"  // 日志系统
+	"sealsuite-operation/internal/config" // 配置管理
+	"sealsuite-operation/internal/logger" // 日志系统
 
 	// 第三方库
-	"go.uber.org/zap"  // 结构化日志
+	"go.uber.org/zap" // 结构化日志
 )
 
 // Client 是 SealSuite API 的客户端结构体
 // 封装了 HTTP 请求、认证信息和模拟模式
 type Client struct {
-	baseURL    string        // API 基础地址
-	accessKey  string        // API 访问密钥 ID
-	secretKey  string        // API 访问密钥密码
-	httpClient *http.Client  // HTTP 客户端实例
-	mockMode   bool          // 是否启用模拟模式
+	baseURL    string       // API 基础地址
+	accessKey  string       // API 访问密钥 ID
+	secretKey  string       // API 访问密钥密码
+	httpClient *http.Client // HTTP 客户端实例
+	mockMode   bool         // 是否启用模拟模式
 
 	// access_token 相关（根据飞连 OpenAPI 文档）
 	tokenMu   sync.Mutex
@@ -40,16 +40,19 @@ type Client struct {
 // CommonResponse 是 SealSuite API 的通用响应结构
 // 所有 API 响应都遵循此格式
 type CommonResponse struct {
-	Code    int         `json:"code"`     // 响应状态码，0 表示成功
-	Message string      `json:"message"`  // 响应消息
-	Data    interface{} `json:"data,omitempty"`  // 响应数据，可选
+	Code    int         `json:"code"`           // 响应状态码，0 表示成功
+	Message string      `json:"message"`        // 响应消息
+	Data    interface{} `json:"data,omitempty"` // 响应数据，可选
 }
 
 // NewClient 创建一个新的 SealSuite API 客户端
 // 参数:
-//   cfg - SealSuite 配置对象，包含 API 地址、密钥等信息
+//
+//	cfg - SealSuite 配置对象，包含 API 地址、密钥等信息
+//
 // 返回:
-//   *Client - 新创建的客户端实例
+//
+//	*Client - 新创建的客户端实例
 func NewClient(cfg *config.SealSuiteConfig) *Client {
 	baseURL := strings.TrimSpace(cfg.BaseURL)
 	// 优先使用结构化字段组装 base_url（若提供）
@@ -65,20 +68,21 @@ func NewClient(cfg *config.SealSuiteConfig) *Client {
 		}
 	}
 	return &Client{
-		baseURL:   baseURL,        // 设置 API 基础地址
-		accessKey: cfg.AccessKey,  // 设置访问密钥 ID
-		secretKey: cfg.SecretKey,  // 设置访问密钥密码
-		httpClient: &http.Client{  // 创建 HTTP 客户端
-			Timeout: time.Duration(cfg.Timeout) * time.Second,  // 设置请求超时
+		baseURL:   baseURL,       // 设置 API 基础地址
+		accessKey: cfg.AccessKey, // 设置访问密钥 ID
+		secretKey: cfg.SecretKey, // 设置访问密钥密码
+		httpClient: &http.Client{ // 创建 HTTP 客户端
+			Timeout: time.Duration(cfg.Timeout) * time.Second, // 设置请求超时
 		},
-		mockMode: false,  // 默认不启用模拟模式
+		mockMode: false, // 默认不启用模拟模式
 	}
 }
 
 // SetMockMode 设置是否启用模拟模式
 // 在模拟模式下，不会发起真实的 HTTP 请求，而是返回预定义的模拟数据
 // 参数:
-//   enabled - 是否启用模拟模式
+//
+//	enabled - 是否启用模拟模式
 func (c *Client) SetMockMode(enabled bool) {
 	c.mockMode = enabled
 	logger.Info("mock mode set", zap.Bool("enabled", enabled))
@@ -87,33 +91,36 @@ func (c *Client) SetMockMode(enabled bool) {
 // getMockResponse 根据请求路径返回模拟数据
 // 仅在 mockMode 为 true 时被调用
 // 参数:
-//   path - API 请求路径
+//
+//	path - API 请求路径
+//
 // 返回:
-//   *CommonResponse - 模拟的响应数据
+//
+//	*CommonResponse - 模拟的响应数据
 func (c *Client) getMockResponse(path string) *CommonResponse {
 	// 定义不同 API 路径对应的模拟数据
 	mockData := map[string]interface{}{
 		// 用户列表 API 的模拟数据
 		"/api/v1/users": map[string]interface{}{
-			"total": 100,  // 总用户数
-			"items": []map[string]interface{}{  // 用户列表
+			"total": 100, // 总用户数
+			"items": []map[string]interface{}{ // 用户列表
 				{"id": 1, "name": "张三", "email": "zhangsan@example.com", "status": "active"},
 				{"id": 2, "name": "李四", "email": "lisi@example.com", "status": "active"},
 			},
 		},
 		// 设备列表 API 的模拟数据
 		"/api/v1/devices": map[string]interface{}{
-			"total": 50,  // 总设备数
-			"items": []map[string]interface{}{  // 设备列表
+			"total": 50, // 总设备数
+			"items": []map[string]interface{}{ // 设备列表
 				{"id": 101, "name": "MacBook Pro", "type": "laptop", "status": "online"},
 				{"id": 102, "name": "iPhone 15", "type": "mobile", "status": "online"},
 			},
 		},
 		// 示例 API 的模拟数据
 		"/api/v1/example/endpoint": map[string]interface{}{
-			"timestamp": time.Now().Unix(),  // 当前时间戳
-			"status":    "ok",               // 状态
-			"message":   "模拟数据响应成功",   // 消息
+			"timestamp": time.Now().Unix(), // 当前时间戳
+			"status":    "ok",              // 状态
+			"message":   "模拟数据响应成功",        // 消息
 		},
 	}
 
@@ -129,9 +136,9 @@ func (c *Client) getMockResponse(path string) *CommonResponse {
 
 	// 返回通用响应结构
 	return &CommonResponse{
-		Code:    0,        // 成功状态码
-		Message: "success",  // 成功消息
-		Data:    data,     // 模拟数据
+		Code:    0,         // 成功状态码
+		Message: "success", // 成功消息
+		Data:    data,      // 模拟数据
 	}
 }
 
@@ -306,12 +313,15 @@ func (c *Client) DoRaw(method, path string, query map[string]string, body interf
 
 // doRequest 执行通用的 HTTP 请求
 // 参数:
-//   method - HTTP 方法：GET, POST, PUT, DELETE 等
-//   path - API 路径，会拼接到 baseURL 后面
-//   body - 请求体，会被序列化为 JSON，可为 nil
+//
+//	method - HTTP 方法：GET, POST, PUT, DELETE 等
+//	path - API 路径，会拼接到 baseURL 后面
+//	body - 请求体，会被序列化为 JSON，可为 nil
+//
 // 返回:
-//   *CommonResponse - API 响应数据
-//   error - 请求失败时的错误信息
+//
+//	*CommonResponse - API 响应数据
+//	error - 请求失败时的错误信息
 func (c *Client) doRequest(method, path string, body interface{}) (*CommonResponse, error) {
 	status, respBody, err := c.DoRaw(method, path, nil, body)
 	if err != nil {
@@ -338,42 +348,54 @@ func (c *Client) doRequest(method, path string, body interface{}) (*CommonRespon
 
 // Get 发送 GET 请求
 // 参数:
-//   path - API 路径
+//
+//	path - API 路径
+//
 // 返回:
-//   *CommonResponse - API 响应
-//   error - 错误信息
+//
+//	*CommonResponse - API 响应
+//	error - 错误信息
 func (c *Client) Get(path string) (*CommonResponse, error) {
 	return c.doRequest(http.MethodGet, path, nil)
 }
 
 // Post 发送 POST 请求
 // 参数:
-//   path - API 路径
-//   body - 请求体对象
+//
+//	path - API 路径
+//	body - 请求体对象
+//
 // 返回:
-//   *CommonResponse - API 响应
-//   error - 错误信息
+//
+//	*CommonResponse - API 响应
+//	error - 错误信息
 func (c *Client) Post(path string, body interface{}) (*CommonResponse, error) {
 	return c.doRequest(http.MethodPost, path, body)
 }
 
 // Put 发送 PUT 请求
 // 参数:
-//   path - API 路径
-//   body - 请求体对象
+//
+//	path - API 路径
+//	body - 请求体对象
+//
 // 返回:
-//   *CommonResponse - API 响应
-//   error - 错误信息
+//
+//	*CommonResponse - API 响应
+//	error - 错误信息
 func (c *Client) Put(path string, body interface{}) (*CommonResponse, error) {
 	return c.doRequest(http.MethodPut, path, body)
 }
 
 // Delete 发送 DELETE 请求
 // 参数:
-//   path - API 路径
+//
+//	path - API 路径
+//
 // 返回:
-//   *CommonResponse - API 响应
-//   error - 错误信息
+//
+//	*CommonResponse - API 响应
+//	error - 错误信息
 func (c *Client) Delete(path string) (*CommonResponse, error) {
 	return c.doRequest(http.MethodDelete, path, nil)
 }

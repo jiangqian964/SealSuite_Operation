@@ -3,38 +3,42 @@
 package handler
 
 import (
-	"encoding/json"  // JSON 编码
-	"fmt"          // 格式化输出
+	"encoding/json" // JSON 编码
+	"fmt"           // 格式化输出
 
 	// 项目内部包
-	"sealsuite-operation/internal/logger"     // 日志系统
-	"sealsuite-operation/internal/sealsuite"  // SealSuite API 客户端
+	"sealsuite-operation/internal/logger"    // 日志系统
+	"sealsuite-operation/internal/sealsuite" // SealSuite API 客户端
 
 	// 第三方库
-	"go.uber.org/zap"  // 结构化日志
+	"go.uber.org/zap" // 结构化日志
 )
 
 // JobHandler 是任务处理器
 // 封装了 SealSuite 客户端，提供各种业务任务的处理方法
 type JobHandler struct {
-	sealSuiteClient *sealsuite.Client  // SealSuite API 客户端
+	sealSuiteClient *sealsuite.Client // SealSuite API 客户端
 }
 
 // NewJobHandler 创建一个新的任务处理器
 // 参数:
-//   client - SealSuite API 客户端实例
+//
+//	client - SealSuite API 客户端实例
+//
 // 返回:
-//   *JobHandler - 新创建的任务处理器
+//
+//	*JobHandler - 新创建的任务处理器
 func NewJobHandler(client *sealsuite.Client) *JobHandler {
 	return &JobHandler{
-		sealSuiteClient: client,  // 保存 API 客户端引用
+		sealSuiteClient: client, // 保存 API 客户端引用
 	}
 }
 
 // ExampleSyncJob 是示例同步任务
 // 调用示例 API 并记录响应数据
 // 返回:
-//   error - 任务执行失败时的错误信息
+//
+//	error - 任务执行失败时的错误信息
 func (h *JobHandler) ExampleSyncJob() error {
 	logger.Info("📋 执行示例同步任务")
 
@@ -54,7 +58,8 @@ func (h *JobHandler) ExampleSyncJob() error {
 // SyncUsersJob 是用户数据同步任务
 // 从 SealSuite 获取用户列表数据
 // 返回:
-//   error - 任务执行失败时的错误信息
+//
+//	error - 任务执行失败时的错误信息
 func (h *JobHandler) SyncUsersJob() error {
 	logger.Info("👥 执行用户数据同步任务")
 
@@ -82,7 +87,8 @@ func (h *JobHandler) SyncUsersJob() error {
 // SyncDevicesJob 是设备数据同步任务
 // 从 SealSuite 获取设备列表数据
 // 返回:
-//   error - 任务执行失败时的错误信息
+//
+//	error - 任务执行失败时的错误信息
 func (h *JobHandler) SyncDevicesJob() error {
 	logger.Info("💻 执行设备数据同步任务")
 

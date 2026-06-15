@@ -3,22 +3,22 @@
 package main
 
 import (
-	"context"      // 上下文管理
+	"context" // 上下文管理
 	"net/http"
-	"os"           // 操作系统接口
-	"os/signal"    // 信号处理
-	"syscall"      // 系统调用
+	"os"        // 操作系统接口
+	"os/signal" // 信号处理
+	"syscall"   // 系统调用
 	"time"
 
 	// 项目内部包
-	"sealsuite-operation/internal/config"     // 配置管理
-	"sealsuite-operation/internal/logger"     // 日志系统
+	"sealsuite-operation/internal/bootstrap"
+	"sealsuite-operation/internal/config" // 配置管理
+	"sealsuite-operation/internal/logger" // 日志系统
 	"sealsuite-operation/internal/runner"
-	"sealsuite-operation/internal/sealsuite"  // SealSuite API 客户端
 	"sealsuite-operation/internal/web"
 
 	// 第三方库
-	"go.uber.org/zap"  // 结构化日志
+	"go.uber.org/zap" // 结构化日志
 )
 
 // main 是程序的主入口函数
@@ -26,7 +26,7 @@ import (
 // 1. 加载配置文件
 // 2. 初始化日志系统
 // 3. 初始化 SealSuite/飞连 API 客户端
-// 4. 初始化 Runner（jobs.yaml + api-templates.yaml）并启动调度
+// 4. 初始化基于 SQLite 业务存储的 Runner 并启动调度
 // 5. 启动本地 Web 控制台（静态前端 + REST API）
 // 6. 等待终止信号并优雅关闭
 func main() {
@@ -55,17 +55,18 @@ func main() {
 	logger.Info("========================================")
 
 	// ---------------------------
-	// 3. 创建 API 客户端
+	// 3. 装配 SQLite、Service 与 API 客户端
 	// ---------------------------
-	// 使用配置创建 SealSuite API 客户端
-	sealSuiteClient := sealsuite.NewClient(&cfg.SealSuite)
-	// 是否启用模拟模式（由配置决定）
-	sealSuiteClient.SetMockMode(cfg.SealSuite.MockMode)
+	app, err := bootstrap.Build(cfg)
+	if err != nil {
+		panic(err)
+	}
+	defer app.DB.Close()
 
 	// ---------------------------
-	// 4. 初始化 Runner 并加载任务/模板
+	// 4. 初始化 Runner；如存在旧版 jobs.yaml，会在首次启动时迁入 SQLite，再按 SQLite 运行态数据装载
 	// ---------------------------
-	r := runner.New(cfg, sealSuiteClient, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, app.Client)
 	if err := r.Reload(); err != nil {
 		logger.Error("runner reload failed", zap.Error(err))
 	}
@@ -73,7 +74,7 @@ func main() {
 	// ---------------------------
 	// 5. 启动 Web 控制台
 	// ---------------------------
-	srv, err := web.NewServer(cfg, r)
+	srv, err := web.NewServerWithServices(cfg, r, app.Services)
 	if err != nil {
 		logger.Fatal("failed to init web server", zap.Error(err))
 	}

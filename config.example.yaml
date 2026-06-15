@@ -1,3 +1,6 @@
+database:
+  # v0.2.0 起业务数据默认落 SQLite；首次启动会自动创建文件与表结构。
+  path: ./data/app.db
 llm:
   mock_mode: false
   formatter:

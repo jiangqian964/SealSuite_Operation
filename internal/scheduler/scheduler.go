@@ -4,12 +4,12 @@ package scheduler
 
 import (
 	// 项目内部包
-	"sealsuite-operation/internal/logger"  // 日志系统
+	"sealsuite-operation/internal/logger" // 日志系统
 	"time"
 
 	// 第三方库
-	"github.com/robfig/cron/v3"  // cron 定时任务库
-	"go.uber.org/zap"            // 结构化日志
+	"github.com/robfig/cron/v3" // cron 定时任务库
+	"go.uber.org/zap"           // 结构化日志
 )
 
 // JobFunc 定义任务函数类型
@@ -20,12 +20,13 @@ type JobFunc func() error
 // 封装了 cron 库，提供更便捷的任务管理功能
 type Scheduler struct {
 	cron *cron.Cron              // cron 调度器实例
-	jobs map[string]cron.EntryID  // 任务名称到任务 ID 的映射
+	jobs map[string]cron.EntryID // 任务名称到任务 ID 的映射
 }
 
 // New 创建一个新的调度器实例
 // 返回:
-//   *Scheduler - 新创建的调度器
+//
+//	*Scheduler - 新创建的调度器
 //
 // 注意：本项目统一使用 **秒级（6段）** Cron 表达式：`sec min hour dom mon dow`
 // 例如：`0 */1 * * * *` 表示每分钟第 0 秒执行一次。
@@ -38,23 +39,26 @@ func New(location *time.Location) *Scheduler {
 			cron.WithSeconds(),
 			cron.WithLocation(location),
 		), // 创建秒级 cron 调度器（6段表达式）
-		jobs: make(map[string]cron.EntryID),  // 初始化任务映射
+		jobs: make(map[string]cron.EntryID), // 初始化任务映射
 	}
 }
 
 // AddJob 添加一个定时任务
 // 参数:
-//   name - 任务名称，用于标识和管理任务
-//   spec - cron 表达式（6段秒级），例如："0 */1 * * * *" 表示每分钟执行一次（第0秒触发）
-//   job - 任务函数，返回 error 表示任务失败
+//
+//	name - 任务名称，用于标识和管理任务
+//	spec - cron 表达式（6段秒级），例如："0 */1 * * * *" 表示每分钟执行一次（第0秒触发）
+//	job - 任务函数，返回 error 表示任务失败
+//
 // 返回:
-//   error - 添加失败时的错误信息
+//
+//	error - 添加失败时的错误信息
 func (s *Scheduler) AddJob(name string, spec string, job JobFunc) error {
 	// 包装任务函数，添加日志记录和错误处理
 	wrappedJob := func() {
 		// 记录任务开始
 		logger.Info("starting job", zap.String("job_name", name))
-		
+
 		// 执行任务
 		if err := job(); err != nil {
 			// 任务执行失败，记录错误日志
@@ -90,7 +94,8 @@ func (s *Scheduler) EntryID(name string) (cron.EntryID, bool) {
 
 // RemoveJob 删除一个已添加的定时任务
 // 参数:
-//   name - 要删除的任务名称
+//
+//	name - 要删除的任务名称
 func (s *Scheduler) RemoveJob(name string) {
 	// 查找任务 ID
 	if id, ok := s.jobs[name]; ok {

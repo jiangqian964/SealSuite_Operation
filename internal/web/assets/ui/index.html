@@ -178,12 +178,12 @@
                       <div class="panel-title">飞连_API 工作台</div>
                       <div class="subtitle">统一维护环境名称、连接地址与飞连 AccessKey 信息，查看态为只读，编辑/新建态可保存为新的 ACTIVE 快照。</div>
                     </div>
-                    <div class="panel-actions">
-                      <button class="btn" id="btn-conn-load">加载当前 ACTIVE</button>
-                      <button class="btn" id="btn-conn-edit">切换编辑态</button>
-                      <button class="btn" id="btn-conn-test">测试连接</button>
-                      <button class="btn primary" id="btn-conn-save">保存并热更新</button>
-                    </div>
+                  </div>
+                  <div class="workbench-actions">
+                    <button class="btn" id="btn-conn-load">加载当前 ACTIVE</button>
+                    <button class="btn" id="btn-conn-edit">切换编辑态</button>
+                    <button class="btn" id="btn-conn-test">测试连接</button>
+                    <button class="btn primary" id="btn-conn-save">保存并热更新</button>
                   </div>
                   <div class="form-section">
                     <div class="section-head">
@@ -271,12 +271,12 @@
                       <div class="panel-title">LLM_API 工作台</div>
                       <div class="subtitle">每条记录保存一组 provider/base_url/api_key/model 等参数；ACTIVE 记录会映射到当前默认运行时 LLM 配置。</div>
                     </div>
-                    <div class="panel-actions">
-                      <button class="btn" id="btn-llm-load">加载当前 ACTIVE</button>
-                      <button class="btn" id="btn-llm-edit">切换编辑态</button>
-                      <button class="btn" id="btn-llm-test">测试 LLM</button>
-                      <button class="btn primary" id="btn-llm-save">保存配置</button>
-                    </div>
+                  </div>
+                  <div class="workbench-actions">
+                    <button class="btn" id="btn-llm-load">加载当前 ACTIVE</button>
+                    <button class="btn" id="btn-llm-edit">切换编辑态</button>
+                    <button class="btn" id="btn-llm-test">测试 LLM</button>
+                    <button class="btn primary" id="btn-llm-save">保存配置</button>
                   </div>
                   <div class="form-section">
                     <div class="section-head">
@@ -408,11 +408,16 @@
                       <div class="panel-title">webhook 配置工作台</div>
                       <div class="subtitle">填写 webhook-id、名称、请求地址、请求方法、请求头和 body 模板，并可直接发起测试推送。</div>
                     </div>
-                    <div class="panel-actions">
-                      <button class="btn" id="btn-webhook-test">测试推送</button>
-                      <button class="btn danger" id="btn-webhook-delete">删除</button>
-                      <button class="btn primary" id="btn-webhook-save">保存</button>
-                    </div>
+                  </div>
+                  <div class="workbench-status">
+                    <span id="webhook-workbench-type">webhook</span>
+                    <span id="webhook-workbench-mode">新建态</span>
+                    <span id="webhook-workbench-record" class="hidden"></span>
+                  </div>
+                  <div class="workbench-actions">
+                    <button class="btn" id="btn-webhook-test">测试推送</button>
+                    <button class="btn danger" id="btn-webhook-delete">删除</button>
+                    <button class="btn primary" id="btn-webhook-save">保存</button>
                   </div>
 
                   <div class="form-section">
@@ -693,11 +698,15 @@
             </div>
           </section>
           <section class="task-subpage-screen hidden" id="task-subpage-schedule">
+            <div class="alert-block">
+              <div class="alert-title">调度类型</div>
+              <div>新建/编辑调度时支持在“常规调度”和“外部 IP 同步”之间切换。外部模式第一版固定使用 Google IP Ranges 源，并保留资源下拉失败后的 resource_id 手填兜底。</div>
+            </div>
             <div class="card toolbar-card">
               <div class="section-head">
                 <div>
                   <div class="section-title">筛选与操作</div>
-                  <div class="subtitle">按目标类型、调度类型和启用状态快速定位任务。</div>
+                  <div class="subtitle">按目标类型、调度类型和启用状态快速定位任务；支持常规调度与外部 IP 同步两类新建流程。</div>
                 </div>
               </div>
               <div class="row">

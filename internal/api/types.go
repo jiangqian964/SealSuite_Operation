@@ -47,9 +47,9 @@ type DiffItem struct {
 }
 
 type PreviewResponse struct {
-	DryRunSupported bool            `json:"dry_run_supported"`
-	RequestSummary  interface{}     `json:"request_summary"`
-	Diff            []DiffItem      `json:"diff,omitempty"`
-	Warnings        []string        `json:"warnings,omitempty"`
+	DryRunSupported bool             `json:"dry_run_supported"`
+	RequestSummary  interface{}      `json:"request_summary"`
+	Diff            []DiffItem       `json:"diff,omitempty"`
+	Warnings        []string         `json:"warnings,omitempty"`
 	DryRunResult    *ExecuteResponse `json:"dry_run_result,omitempty"`
 }

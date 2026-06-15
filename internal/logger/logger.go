@@ -3,10 +3,10 @@
 package logger
 
 import (
-	"os"  // 操作系统接口，用于程序退出
+	"os" // 操作系统接口，用于程序退出
 
-	"go.uber.org/zap"          // Uber 开源的高性能日志库
-	"go.uber.org/zap/zapcore"  // zap 的核心配置包
+	"go.uber.org/zap"         // Uber 开源的高性能日志库
+	"go.uber.org/zap/zapcore" // zap 的核心配置包
 )
 
 // globalLogger 是全局日志单例
@@ -15,10 +15,13 @@ var globalLogger *zap.Logger
 
 // Init 初始化日志系统
 // 参数:
-//   level - 日志级别，可选值：debug, info, warn, error
-//   filename - 日志文件路径，如果为空则只输出到控制台
+//
+//	level - 日志级别，可选值：debug, info, warn, error
+//	filename - 日志文件路径，如果为空则只输出到控制台
+//
 // 返回:
-//   error - 初始化失败时的错误信息
+//
+//	error - 初始化失败时的错误信息
 func Init(level string, filename string) error {
 	// 使用 zap 生产环境配置作为基础
 	config := zap.NewProductionConfig()
@@ -64,7 +67,8 @@ func Init(level string, filename string) error {
 // Get 获取全局 logger 实例
 // 如果 logger 未初始化，则创建一个默认的生产环境 logger
 // 返回:
-//   *zap.Logger - 全局 logger 实例
+//
+//	*zap.Logger - 全局 logger 实例
 func Get() *zap.Logger {
 	if globalLogger == nil {
 		// 如果未初始化，创建一个默认的生产环境 logger
@@ -84,8 +88,9 @@ func Sync() {
 
 // Debug 输出 Debug 级别日志
 // 参数:
-//   msg - 日志消息内容
-//   fields - 结构化字段，可变参数，例如：zap.String("key", "value")
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数，例如：zap.String("key", "value")
 func Debug(msg string, fields ...zap.Field) {
 	Get().Debug(msg, fields...)
 }
@@ -93,8 +98,9 @@ func Debug(msg string, fields ...zap.Field) {
 // Info 输出 Info 级别日志
 // 用于记录程序正常运行时的重要信息
 // 参数:
-//   msg - 日志消息内容
-//   fields - 结构化字段，可变参数
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数
 func Info(msg string, fields ...zap.Field) {
 	Get().Info(msg, fields...)
 }
@@ -102,8 +108,9 @@ func Info(msg string, fields ...zap.Field) {
 // Warn 输出 Warn 级别日志
 // 用于记录警告信息，表示可能存在问题但不影响程序继续运行
 // 参数:
-//   msg - 日志消息内容
-//   fields - 结构化字段，可变参数
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数
 func Warn(msg string, fields ...zap.Field) {
 	Get().Warn(msg, fields...)
 }
@@ -111,8 +118,9 @@ func Warn(msg string, fields ...zap.Field) {
 // Error 输出 Error 级别日志
 // 用于记录错误信息，表示程序出现了问题
 // 参数:
-//   msg - 日志消息内容
-//   fields - 结构化字段，可变参数
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数
 func Error(msg string, fields ...zap.Field) {
 	Get().Error(msg, fields...)
 }
@@ -120,8 +128,9 @@ func Error(msg string, fields ...zap.Field) {
 // Fatal 输出 Fatal 级别日志并退出程序
 // 用于记录严重错误，程序无法继续运行
 // 参数:
-//   msg - 日志消息内容
-//   fields - 结构化字段，可变参数
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数
 func Fatal(msg string, fields ...zap.Field) {
 	Get().Fatal(msg, fields...)
 	// 日志输出后立即退出程序，状态码为 1

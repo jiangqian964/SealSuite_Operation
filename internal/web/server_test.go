@@ -1,6 +1,7 @@
 package web
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,20 +12,51 @@ import (
 	"testing"
 
 	"sealsuite-operation/internal/config"
+	appdb "sealsuite-operation/internal/db"
+	sqliteRepo "sealsuite-operation/internal/repository/sqlite"
 	"sealsuite-operation/internal/runner"
 	"sealsuite-operation/internal/sealsuite"
 	"sealsuite-operation/internal/storage"
 )
 
-func TestIndexServed(t *testing.T) {
+func newWebTestRouter(t *testing.T) http.Handler {
+	t.Helper()
 	cfg := &config.Config{
-		Server: config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+		Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
 		Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
 		SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
-		Log: config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		Database:  config.DatabaseConfig{Path: filepath.Join(t.TempDir(), "app.db")},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
+	h, err := NewRouter(cfg, r)
+	if err != nil {
+		t.Fatalf("NewRouter err=%v", err)
+	}
+	return h
+}
+
+func doJSONRequest(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if method != http.MethodGet && method != http.MethodDelete {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestIndexServed(t *testing.T) {
+	cfg := &config.Config{
+		Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+		Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+		SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
+		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+	}
+	client := sealsuite.NewClient(&cfg.SealSuite)
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatalf("NewRouter err=%v", err)
@@ -59,6 +91,21 @@ func withTempWorkingDir(t *testing.T, fn func(dir string)) {
 	fn(dir)
 }
 
+func openTestSQLiteDB(t *testing.T, cfg *config.Config, dir string) *sql.DB {
+	t.Helper()
+	cfg.Database.Path = filepath.Join(dir, "app.db")
+	db, err := appdb.OpenSQLite(cfg.Database.Path)
+	if err != nil {
+		t.Fatalf("open sqlite err=%v", err)
+	}
+	if err := appdb.Migrate(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate sqlite err=%v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 func TestConnectionTestReturnsTokenFields(t *testing.T) {
 	// Contract test: /connection/test should explicitly tell whether token is valid.
 	feilian := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +134,7 @@ func TestConnectionTestReturnsTokenFields(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatalf("NewRouter err=%v", err)
@@ -113,26 +160,22 @@ func TestConnectionTestReturnsTokenFields(t *testing.T) {
 
 func TestDeleteInactiveConnectionEndpoint(t *testing.T) {
 	withTempWorkingDir(t, func(dir string) {
-		store := storage.ConnectionsStore{Path: filepath.Join(dir, "connections.yaml")}
-		if err := store.Save(&storage.ConnectionsFile{
-			Version:  1,
-			ActiveID: "conn-active",
-			Items: []storage.ConnectionItem{
-				{ID: "conn-inactive", Name: "inactive"},
-				{ID: "conn-active", Name: "active"},
-			},
-		}); err != nil {
-			t.Fatalf("Save err=%v", err)
-		}
-
 		cfg := &config.Config{
 			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
 			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		repo := sqliteRepo.NewConnectionsRepository(db)
+		if err := repo.AddAndActivate(storage.ConnectionItem{ID: "conn-inactive", Name: "inactive"}); err != nil {
+			t.Fatalf("seed inactive connection err=%v", err)
+		}
+		if err := repo.AddAndActivate(storage.ConnectionItem{ID: "conn-active", Name: "active"}); err != nil {
+			t.Fatalf("seed active connection err=%v", err)
+		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -145,7 +188,7 @@ func TestDeleteInactiveConnectionEndpoint(t *testing.T) {
 			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		got, err := store.Load()
+		got, err := repo.Load()
 		if err != nil {
 			t.Fatalf("Load err=%v", err)
 		}
@@ -157,26 +200,22 @@ func TestDeleteInactiveConnectionEndpoint(t *testing.T) {
 
 func TestDeleteActiveConnectionEndpointRejected(t *testing.T) {
 	withTempWorkingDir(t, func(dir string) {
-		store := storage.ConnectionsStore{Path: filepath.Join(dir, "connections.yaml")}
-		if err := store.Save(&storage.ConnectionsFile{
-			Version:  1,
-			ActiveID: "conn-active",
-			Items: []storage.ConnectionItem{
-				{ID: "conn-inactive", Name: "inactive"},
-				{ID: "conn-active", Name: "active"},
-			},
-		}); err != nil {
-			t.Fatalf("Save err=%v", err)
-		}
-
 		cfg := &config.Config{
 			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
 			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		repo := sqliteRepo.NewConnectionsRepository(db)
+		if err := repo.AddAndActivate(storage.ConnectionItem{ID: "conn-inactive", Name: "inactive"}); err != nil {
+			t.Fatalf("seed inactive connection err=%v", err)
+		}
+		if err := repo.AddAndActivate(storage.ConnectionItem{ID: "conn-active", Name: "active"}); err != nil {
+			t.Fatalf("seed active connection err=%v", err)
+		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -207,7 +246,7 @@ func TestJobsCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +283,7 @@ func TestTemplateCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +320,7 @@ func TestTaskDraftCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +343,7 @@ func TestJobScheduleCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +363,201 @@ func TestJobScheduleCRUDEndpoints(t *testing.T) {
 	}
 }
 
+func TestExternalIPSyncTaskRoutesSaveAndList(t *testing.T) {
+	h := newWebTestRouter(t)
+
+	resp := doJSONRequest(t, h, http.MethodPost, "/api/v1/external-ip-sync-tasks", `{
+		"id":"google_ipv4_sync",
+		"name":"Google IPv4 同步",
+		"ip_version":"ipv4",
+		"resource_id":"res_google",
+		"feilian_api_path":"/api/open/v1/addr/management/add"
+	}`)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("save got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	list := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-tasks", "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("list got %d body=%s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), `"google_ipv4_sync"`) {
+		t.Fatalf("expected saved task id in list body=%s", list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), `"ipv4"`) {
+		t.Fatalf("expected ipv4 in list body=%s", list.Body.String())
+	}
+}
+
+func TestExternalIPSyncTaskRoutesGetAndDelete(t *testing.T) {
+	h := newWebTestRouter(t)
+
+	create := doJSONRequest(t, h, http.MethodPost, "/api/v1/external-ip-sync-tasks", `{
+		"id":"google_ipv6_sync",
+		"name":"Google IPv6 同步",
+		"ip_version":"ipv6",
+		"resource_id":"res_google_v6"
+	}`)
+	if create.Code != http.StatusOK {
+		t.Fatalf("create got %d body=%s", create.Code, create.Body.String())
+	}
+
+	get := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-tasks/google_ipv6_sync", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("get got %d body=%s", get.Code, get.Body.String())
+	}
+	if !strings.Contains(get.Body.String(), `"res_google_v6"`) {
+		t.Fatalf("expected resource_id in get body=%s", get.Body.String())
+	}
+
+	del := doJSONRequest(t, h, http.MethodDelete, "/api/v1/external-ip-sync-tasks/google_ipv6_sync", "")
+	if del.Code != http.StatusOK {
+		t.Fatalf("delete got %d body=%s", del.Code, del.Body.String())
+	}
+
+	missing := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-tasks/google_ipv6_sync", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after delete, got %d body=%s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestExternalIPSyncTaskRoutesRejectInvalidPayload(t *testing.T) {
+	h := newWebTestRouter(t)
+
+	resp := doJSONRequest(t, h, http.MethodPost, "/api/v1/external-ip-sync-tasks", `{
+		"id":"google_invalid_sync",
+		"name":"Google Invalid 同步",
+		"ip_version":"ipv5",
+		"resource_id":"res_google"
+	}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "invalid ip_version") {
+		t.Fatalf("expected validation error, body=%s", resp.Body.String())
+	}
+}
+
+func TestExternalIPSyncResourcesRouteReturnsFeilianItems(t *testing.T) {
+	feilian := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/open/v1/token" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"access_token":"T","expires_in":7200}}`))
+			return
+		case r.URL.Path == "/api/open/v1/addr/management/list" && r.Method == http.MethodGet:
+			if r.Header.Get("Authorization") != "T" {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"items":[{"resource_id":"res_google","name":"Google Resource"},{"resource_id":"res_google_v6","name":"Google IPv6 Resource"}]}}`))
+			return
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer feilian.Close()
+
+	cfg := &config.Config{
+		Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+		Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+		SealSuite: config.SealSuiteConfig{BaseURL: feilian.URL, AccessKey: "ak", SecretKey: "sk", Timeout: 1},
+		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		Database:  config.DatabaseConfig{Path: filepath.Join(t.TempDir(), "app.db")},
+	}
+	client := sealsuite.NewClient(&cfg.SealSuite)
+	r := runner.New(cfg, client)
+	h, err := NewRouter(cfg, r)
+	if err != nil {
+		t.Fatalf("NewRouter err=%v", err)
+	}
+
+	resp := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-resources", "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("resources got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"res_google"`) || !strings.Contains(resp.Body.String(), `"Google Resource"`) {
+		t.Fatalf("expected feilian resource items, body=%s", resp.Body.String())
+	}
+}
+
+func TestDeleteJobScheduleRemovesUnreferencedExternalIPSyncTask(t *testing.T) {
+	h := newWebTestRouter(t)
+
+	createTask := doJSONRequest(t, h, http.MethodPost, "/api/v1/external-ip-sync-tasks", `{
+		"id":"google_ipv4_sync",
+		"name":"Google IPv4 同步",
+		"ip_version":"ipv4",
+		"resource_id":"res_google"
+	}`)
+	if createTask.Code != http.StatusOK {
+		t.Fatalf("create task got %d body=%s", createTask.Code, createTask.Body.String())
+	}
+
+	createSchedule := doJSONRequest(t, h, http.MethodPost, "/api/v1/job-schedules", `{
+		"id":"sched_google_ipv4_daily",
+		"target_type":"external_ip_sync",
+		"target_id":"google_ipv4_sync",
+		"enabled":true,
+		"schedule_type":"cron",
+		"cron":"0 0 1 * * *",
+		"timezone":"Asia/Shanghai"
+	}`)
+	if createSchedule.Code != http.StatusOK {
+		t.Fatalf("create schedule got %d body=%s", createSchedule.Code, createSchedule.Body.String())
+	}
+
+	del := doJSONRequest(t, h, http.MethodDelete, "/api/v1/job-schedules/sched_google_ipv4_daily", "")
+	if del.Code != http.StatusOK {
+		t.Fatalf("delete schedule got %d body=%s", del.Code, del.Body.String())
+	}
+
+	getTask := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-tasks/google_ipv4_sync", "")
+	if getTask.Code != http.StatusNotFound {
+		t.Fatalf("expected task deleted with last schedule, got %d body=%s", getTask.Code, getTask.Body.String())
+	}
+}
+
+func TestDeleteJobScheduleKeepsReferencedExternalIPSyncTask(t *testing.T) {
+	h := newWebTestRouter(t)
+
+	createTask := doJSONRequest(t, h, http.MethodPost, "/api/v1/external-ip-sync-tasks", `{
+		"id":"google_shared_sync",
+		"name":"Google Shared 同步",
+		"ip_version":"ipv4",
+		"resource_id":"res_google_shared"
+	}`)
+	if createTask.Code != http.StatusOK {
+		t.Fatalf("create task got %d body=%s", createTask.Code, createTask.Body.String())
+	}
+
+	for _, scheduleID := range []string{"sched_google_shared_a", "sched_google_shared_b"} {
+		createSchedule := doJSONRequest(t, h, http.MethodPost, "/api/v1/job-schedules", `{
+			"id":"`+scheduleID+`",
+			"target_type":"external_ip_sync",
+			"target_id":"google_shared_sync",
+			"enabled":true,
+			"schedule_type":"cron",
+			"cron":"0 0 1 * * *",
+			"timezone":"Asia/Shanghai"
+		}`)
+		if createSchedule.Code != http.StatusOK {
+			t.Fatalf("create schedule %s got %d body=%s", scheduleID, createSchedule.Code, createSchedule.Body.String())
+		}
+	}
+
+	del := doJSONRequest(t, h, http.MethodDelete, "/api/v1/job-schedules/sched_google_shared_a", "")
+	if del.Code != http.StatusOK {
+		t.Fatalf("delete schedule got %d body=%s", del.Code, del.Body.String())
+	}
+
+	getTask := doJSONRequest(t, h, http.MethodGet, "/api/v1/external-ip-sync-tasks/google_shared_sync", "")
+	if getTask.Code != http.StatusOK {
+		t.Fatalf("expected task kept while still referenced, got %d body=%s", getTask.Code, getTask.Body.String())
+	}
+}
+
 func TestComplexTaskCRUDEndpoints(t *testing.T) {
 	cfg := &config.Config{
 		Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
@@ -332,7 +566,7 @@ func TestComplexTaskCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +590,7 @@ func TestJobScheduleRunEndpointAndDetail(t *testing.T) {
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
 	client.SetMockMode(true)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +658,7 @@ func TestComplexTaskRunEndpoint(t *testing.T) {
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
 	client.SetMockMode(true)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +708,7 @@ func TestOutputTemplateCRUDEndpoints(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -520,7 +754,7 @@ func TestLLMTestEndpoint(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatal(err)
@@ -585,8 +819,9 @@ server:
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -616,10 +851,9 @@ server:
 			t.Fatalf("save got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		apiStore := storage.NewLLMAPIStore(filepath.Join(dir, "llm-apis.yaml"))
-		file, err := apiStore.Load()
+		file, err := sqliteRepo.NewLLMAPIRepository(db).Load()
 		if err != nil {
-			t.Fatalf("load llm api store err=%v", err)
+			t.Fatalf("load llm api repo err=%v", err)
 		}
 		if file.ActiveID != "api-a" {
 			t.Fatalf("expected active_id=api-a, got=%q", file.ActiveID)
@@ -634,6 +868,19 @@ server:
 		formatter := llmCfg["formatter"].(map[string]interface{})
 		if planner["provider"] != "deepseek" || planner["model"] != "deepseek-v3" {
 			t.Fatalf("expected planner updated from active llm api, got=%v", planner)
+		}
+		if planner["timeout"] != 30 {
+			t.Fatalf("expected planner timeout=30, got=%v", planner["timeout"])
+		}
+		if planner["temperature"] != 0.3 {
+			t.Fatalf("expected planner temperature=0.3, got=%v", planner["temperature"])
+		}
+		if planner["max_tokens"] != 2048 {
+			t.Fatalf("expected planner max_tokens=2048, got=%v", planner["max_tokens"])
+		}
+		responseFormat, _ := planner["response_format"].(map[string]interface{})
+		if responseFormat["type"] != "json_object" {
+			t.Fatalf("expected planner response_format.type=json_object, got=%v", planner["response_format"])
 		}
 		if formatter["provider"] != "old-formatter" || formatter["model"] != "old-formatter-model" {
 			t.Fatalf("expected formatter untouched, got=%v", formatter)
@@ -660,6 +907,19 @@ server:
 		}
 		if item["api_key"] != "****" {
 			t.Fatalf("expected masked api_key, got=%v", item["api_key"])
+		}
+		if item["timeout"] != float64(30) {
+			t.Fatalf("expected item timeout=30, got=%v", item["timeout"])
+		}
+		if item["temperature"] != 0.3 {
+			t.Fatalf("expected item temperature=0.3, got=%v", item["temperature"])
+		}
+		if item["max_tokens"] != float64(2048) {
+			t.Fatalf("expected item max_tokens=2048, got=%v", item["max_tokens"])
+		}
+		listRespFormat, _ := item["response_format"].(map[string]interface{})
+		if listRespFormat["type"] != "json_object" {
+			t.Fatalf("expected item response_format.type=json_object, got=%v", item["response_format"])
 		}
 	})
 }
@@ -700,7 +960,7 @@ server:
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatal(err)
@@ -774,16 +1034,16 @@ func TestAPIExecuteUsesSelectedLLMAPIIDBeforeRoleFallback(t *testing.T) {
 				},
 			},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
 		}
 
-		store := storage.NewLLMAPIStore(filepath.Join(dir, "llm-apis.yaml"))
-		if err := store.UpsertAndMaybeActivate(storage.LLMAPIItem{
+		if err := sqliteRepo.NewLLMAPIRepository(db).UpsertAndMaybeActivate(storage.LLMAPIItem{
 			ID:       "llm_pro_main",
 			Name:     "主模型",
 			Tags:     []string{"Main"},
@@ -852,16 +1112,16 @@ func TestAPIExecuteReturnsReadableErrorWhenSelectedLLMAPIIsMissing(t *testing.T)
 				},
 			},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
 		}
 
-		store := storage.NewLLMAPIStore(filepath.Join(dir, "llm-apis.yaml"))
-		if err := store.UpsertAndMaybeActivate(storage.LLMAPIItem{
+		if err := sqliteRepo.NewLLMAPIRepository(db).UpsertAndMaybeActivate(storage.LLMAPIItem{
 			ID:       "llm_existing",
 			Name:     "已存在模型",
 			Enabled:  true,
@@ -913,16 +1173,16 @@ func TestAPIExecuteReturnsReadableErrorWhenSelectedLLMAPIIsDisabled(t *testing.T
 				},
 			},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
 		}
 
-		store := storage.NewLLMAPIStore(filepath.Join(dir, "llm-apis.yaml"))
-		if err := store.UpsertAndMaybeActivate(storage.LLMAPIItem{
+		if err := sqliteRepo.NewLLMAPIRepository(db).UpsertAndMaybeActivate(storage.LLMAPIItem{
 			ID:       "llm_disabled",
 			Name:     "已禁用模型",
 			Enabled:  false,
@@ -959,25 +1219,25 @@ func TestAPIExecuteReturnsReadableErrorWhenSelectedLLMAPIIsDisabled(t *testing.T
 
 func TestWebhookRoutesPersistProviderAndDefaultGeneric(t *testing.T) {
 	withTempWorkingDir(t, func(dir string) {
-		if err := os.WriteFile(filepath.Join(dir, "webhooks.yaml"), []byte(`items:
-  - id: hook-legacy
-    name: Legacy Hook
-    provider: feishu
-    url: https://example.com/legacy
-    method: POST
-    enabled: true
-`), 0o644); err != nil {
-			t.Fatalf("write legacy webhook store err=%v", err)
-		}
-
 		cfg := &config.Config{
 			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
 			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
+			ID:       "hook-legacy",
+			Name:     "Legacy Hook",
+			Provider: "feishu",
+			URL:      "https://example.com/legacy",
+			Method:   http.MethodPost,
+			Enabled:  true,
+		}); err != nil {
+			t.Fatalf("seed legacy webhook err=%v", err)
+		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -998,10 +1258,9 @@ func TestWebhookRoutesPersistProviderAndDefaultGeneric(t *testing.T) {
 			t.Fatalf("save got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		store := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		file, err := store.Load()
+		file, err := sqliteRepo.NewWebhookRepository(db).Load()
 		if err != nil {
-			t.Fatalf("load webhook store err=%v", err)
+			t.Fatalf("load webhook repo err=%v", err)
 		}
 		if len(file.Items) != 2 {
 			t.Fatalf("expected two webhook items, got=%v", file.Items)
@@ -1070,8 +1329,9 @@ func TestTaskDraftRoutesPersistWebhookReferenceState(t *testing.T) {
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1093,19 +1353,18 @@ func TestTaskDraftRoutesPersistWebhookReferenceState(t *testing.T) {
 			t.Fatalf("task draft save got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		store := storage.TaskDraftsStore{Path: filepath.Join(dir, "task-drafts.yaml")}
-		tf, err := store.Load()
+		items, err := sqliteRepo.NewTaskDraftRepository(db).List()
 		if err != nil {
-			t.Fatalf("load task drafts err=%v", err)
+			t.Fatalf("list task drafts err=%v", err)
 		}
-		if len(tf.Items) != 1 {
-			t.Fatalf("expected one task draft, got=%v", tf.Items)
+		if len(items) != 1 {
+			t.Fatalf("expected one task draft, got=%v", items)
 		}
-		if tf.Items[0].WebhookConfigID != "test1" {
-			t.Fatalf("expected webhook_config_id persisted, got=%q", tf.Items[0].WebhookConfigID)
+		if items[0].WebhookConfigID != "test1" {
+			t.Fatalf("expected webhook_config_id persisted, got=%q", items[0].WebhookConfigID)
 		}
-		if !tf.Items[0].WebhookEnabled {
-			t.Fatalf("expected webhook_enabled persisted true, got=%+v", tf.Items[0])
+		if !items[0].WebhookEnabled {
+			t.Fatalf("expected webhook_enabled persisted true, got=%+v", items[0])
 		}
 
 		rr = httptest.NewRecorder()
@@ -1128,8 +1387,9 @@ func TestTaskDraftRoutesPersistCycleFields(t *testing.T) {
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1152,22 +1412,21 @@ func TestTaskDraftRoutesPersistCycleFields(t *testing.T) {
 			t.Fatalf("task draft save got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		store := storage.TaskDraftsStore{Path: filepath.Join(dir, "task-drafts.yaml")}
-		tf, err := store.Load()
+		items, err := sqliteRepo.NewTaskDraftRepository(db).List()
 		if err != nil {
-			t.Fatalf("load task drafts err=%v", err)
+			t.Fatalf("list task drafts err=%v", err)
 		}
-		if len(tf.Items) != 1 {
-			t.Fatalf("expected one task draft, got=%v", tf.Items)
+		if len(items) != 1 {
+			t.Fatalf("expected one task draft, got=%v", items)
 		}
-		if tf.Items[0].CycleMode != "30min" {
-			t.Fatalf("expected cycle_mode persisted, got=%q", tf.Items[0].CycleMode)
+		if items[0].CycleMode != "30min" {
+			t.Fatalf("expected cycle_mode persisted, got=%q", items[0].CycleMode)
 		}
-		if tf.Items[0].RunCount != 5 {
-			t.Fatalf("expected run_count persisted as 5, got=%d", tf.Items[0].RunCount)
+		if items[0].RunCount != 5 {
+			t.Fatalf("expected run_count persisted as 5, got=%d", items[0].RunCount)
 		}
-		if tf.Items[0].RunUntil != "2026-06-30" {
-			t.Fatalf("expected run_until persisted, got=%q", tf.Items[0].RunUntil)
+		if items[0].RunUntil != "2026-06-30" {
+			t.Fatalf("expected run_until persisted, got=%q", items[0].RunUntil)
 		}
 
 		rr = httptest.NewRecorder()
@@ -1196,8 +1455,9 @@ func TestWebhookRoutesSaveListAndDelete(t *testing.T) {
 			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1},
 			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 		}
+		db := openTestSQLiteDB(t, cfg, dir)
 		client := sealsuite.NewClient(&cfg.SealSuite)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1219,10 +1479,9 @@ func TestWebhookRoutesSaveListAndDelete(t *testing.T) {
 			t.Fatalf("save got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		store := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		file, err := store.Load()
+		file, err := sqliteRepo.NewWebhookRepository(db).Load()
 		if err != nil {
-			t.Fatalf("load webhook store err=%v", err)
+			t.Fatalf("load webhook repo err=%v", err)
 		}
 		if len(file.Items) != 1 || file.Items[0].Method != "POST" {
 			t.Fatalf("expected stored POST webhook, got=%v", file.Items)
@@ -1258,9 +1517,9 @@ func TestWebhookRoutesSaveListAndDelete(t *testing.T) {
 			t.Fatalf("delete got %d body=%s", rr.Code, rr.Body.String())
 		}
 
-		file, err = store.Load()
+		file, err = sqliteRepo.NewWebhookRepository(db).Load()
 		if err != nil {
-			t.Fatalf("reload webhook store err=%v", err)
+			t.Fatalf("reload webhook repo err=%v", err)
 		}
 		if len(file.Items) != 0 {
 			t.Fatalf("expected store empty after delete, got=%v", file.Items)
@@ -1299,7 +1558,7 @@ func TestWebhookTestEndpointReturnsStatusBodyAndPreview(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatalf("NewRouter err=%v", err)
@@ -1389,7 +1648,7 @@ func TestWebhookTestEndpointBuildsFeishuPayloadFromProvider(t *testing.T) {
 		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 	}
 	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+	r := runner.New(cfg, client)
 	h, err := NewRouter(cfg, r)
 	if err != nil {
 		t.Fatalf("NewRouter err=%v", err)
@@ -1458,8 +1717,14 @@ func TestAPIExecuteWebhookFailureDoesNotFailMainRequest(t *testing.T) {
 		}))
 		defer webhookSrv.Close()
 
-		webhookStore := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		if err := webhookStore.Upsert(storage.WebhookItem{
+		cfg := &config.Config{
+			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
+			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
 			ID:      "hook-api-execute",
 			Name:    "API Execute Hook",
 			URL:     webhookSrv.URL,
@@ -1468,16 +1733,9 @@ func TestAPIExecuteWebhookFailureDoesNotFailMainRequest(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert webhook err=%v", err)
 		}
-
-		cfg := &config.Config{
-			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
-			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1534,7 +1792,7 @@ func TestAPIExecuteRunsTaskDraftPostProcessChain(t *testing.T) {
 		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1603,8 +1861,14 @@ func TestJobScheduleRunReturnsTaskDraftWebhookDeliveryWithoutBlockingSuccess(t *
 		}))
 		defer webhookSrv.Close()
 
-		webhookStore := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		if err := webhookStore.Upsert(storage.WebhookItem{
+		cfg := &config.Config{
+			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
+			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
 			ID:      "hook-runtime-draft",
 			Name:    "Runtime Draft Hook",
 			URL:     webhookSrv.URL,
@@ -1613,16 +1877,9 @@ func TestJobScheduleRunReturnsTaskDraftWebhookDeliveryWithoutBlockingSuccess(t *
 		}); err != nil {
 			t.Fatalf("upsert webhook err=%v", err)
 		}
-
-		cfg := &config.Config{
-			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
-			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1714,8 +1971,14 @@ func TestScheduleRunWebhookSuccessReturnsDelivery(t *testing.T) {
 		}))
 		defer webhookSrv.Close()
 
-		webhookStore := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		if err := webhookStore.Upsert(storage.WebhookItem{
+		cfg := &config.Config{
+			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
+			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
 			ID:      "hook-schedule-complex",
 			Name:    "Schedule Complex Hook",
 			URL:     webhookSrv.URL,
@@ -1724,16 +1987,9 @@ func TestScheduleRunWebhookSuccessReturnsDelivery(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert webhook err=%v", err)
 		}
-
-		cfg := &config.Config{
-			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
-			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1826,8 +2082,14 @@ func TestComplexTaskRunWebhookSuccessReturnsDelivery(t *testing.T) {
 		}))
 		defer webhookSrv.Close()
 
-		webhookStore := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		if err := webhookStore.Upsert(storage.WebhookItem{
+		cfg := &config.Config{
+			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
+			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
 			ID:      "hook-complex-runtime",
 			Name:    "Complex Runtime Hook",
 			URL:     webhookSrv.URL,
@@ -1836,16 +2098,9 @@ func TestComplexTaskRunWebhookSuccessReturnsDelivery(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert webhook err=%v", err)
 		}
-
-		cfg := &config.Config{
-			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
-			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)
@@ -1910,8 +2165,14 @@ func TestSavedComplexTaskRunWebhookFailureDoesNotFailMainSuccess(t *testing.T) {
 		}))
 		defer webhookSrv.Close()
 
-		webhookStore := storage.NewWebhookStore(filepath.Join(dir, "webhooks.yaml"))
-		if err := webhookStore.Upsert(storage.WebhookItem{
+		cfg := &config.Config{
+			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
+			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
+		}
+		db := openTestSQLiteDB(t, cfg, dir)
+		if err := sqliteRepo.NewWebhookRepository(db).Upsert(storage.WebhookItem{
 			ID:      "hook-complex-saved",
 			Name:    "Complex Saved Hook",
 			URL:     webhookSrv.URL,
@@ -1920,16 +2181,9 @@ func TestSavedComplexTaskRunWebhookFailureDoesNotFailMainSuccess(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert webhook err=%v", err)
 		}
-
-		cfg := &config.Config{
-			Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-			Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-			SealSuite: config.SealSuiteConfig{BaseURL: "http://example.com", AccessKey: "ak", SecretKey: "sk", Timeout: 1, MockMode: true},
-			Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-		}
 		client := sealsuite.NewClient(&cfg.SealSuite)
 		client.SetMockMode(true)
-		r := runner.New(cfg, client, "jobs.yaml", "api-templates.yaml")
+		r := runner.New(cfg, client)
 		h, err := NewRouter(cfg, r)
 		if err != nil {
 			t.Fatalf("NewRouter err=%v", err)

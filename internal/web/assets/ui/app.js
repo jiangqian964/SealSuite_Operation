@@ -485,10 +485,14 @@ function renderConnectionWorkbench() {
   const state = window.__connCenterState;
   const isConnection = state.currentType !== 'llm';
   const isLLM = !isConnection;
+  const isCreateMode = state.currentMode === 'create';
+  const isViewMode = state.currentMode === 'view';
   host.dataset.currentType = state.currentType || '';
   host.dataset.currentMode = state.currentMode || '';
   host.dataset.currentConnectionId = state.currentConnectionID || '';
   host.dataset.currentLlmApiId = state.currentLLMAPIID || '';
+  host.classList.remove('hidden');
+  host.setAttribute('aria-hidden', 'false');
 
   if (qs('#conn-workbench-type')) qs('#conn-workbench-type').textContent = isConnection ? '飞连_API' : 'LLM_API';
   if (qs('#conn-workbench-mode')) qs('#conn-workbench-mode').textContent = getWorkbenchModeText(state.currentType, state.currentMode);
@@ -496,20 +500,27 @@ function renderConnectionWorkbench() {
   qs('#conn-form-feilian')?.classList.toggle('hidden', !isConnection);
   qs('#conn-form-llm-api')?.classList.toggle('hidden', !isLLM);
 
-  const connReadonly = !isConnection || state.currentMode === 'view';
+  const connReadonly = !isConnection || isViewMode;
   setReadonlyFieldState(['#conn-name', '#conn-scheme', '#conn-host', '#conn-port', '#conn-ak', '#conn-sk'], connReadonly);
-  if (qs('#btn-conn-load')) qs('#btn-conn-load').disabled = !isConnection;
-  if (qs('#btn-conn-test')) qs('#btn-conn-test').disabled = !isConnection;
+  if (qs('#btn-conn-load')) {
+    qs('#btn-conn-load').disabled = !isConnection;
+    qs('#btn-conn-load').classList.toggle('hidden', !isConnection || isCreateMode);
+  }
+  if (qs('#btn-conn-test')) {
+    qs('#btn-conn-test').disabled = !isConnection;
+    qs('#btn-conn-test').textContent = isCreateMode ? '测试新连接' : '测试连接';
+  }
   if (qs('#btn-conn-save')) {
-    qs('#btn-conn-save').disabled = !isConnection || state.currentMode === 'view';
-    qs('#btn-conn-save').textContent = state.currentMode === 'edit' ? '保存为新 ACTIVE 快照' : '保存并热更新';
+    qs('#btn-conn-save').disabled = !isConnection || isViewMode;
+    qs('#btn-conn-save').classList.toggle('hidden', !isConnection || isViewMode);
+    qs('#btn-conn-save').textContent = isCreateMode ? '创建并保存' : (state.currentMode === 'edit' ? '保存为新 ACTIVE 快照' : '保存并热更新');
   }
   if (qs('#btn-conn-edit')) {
     qs('#btn-conn-edit').disabled = !isConnection;
-    qs('#btn-conn-edit').classList.toggle('hidden', !isConnection || state.currentMode === 'create');
+    qs('#btn-conn-edit').classList.toggle('hidden', !isConnection || isCreateMode);
   }
 
-  const llmReadonly = !isLLM || state.currentMode === 'view';
+  const llmReadonly = !isLLM || isViewMode;
   setReadonlyFieldState([
     '#llm-api-name',
     '#llm-api-tags',
@@ -529,14 +540,24 @@ function renderConnectionWorkbench() {
     '#llm-api-thinking',
     '#llm-api-activate'
   ], llmReadonly);
-  setReadonlyFieldState(['#llm-api-id'], !isLLM || state.currentMode !== 'create');
-  if (qs('#btn-llm-load')) qs('#btn-llm-load').disabled = !isLLM;
+  setReadonlyFieldState(['#llm-api-id'], !isLLM || !isCreateMode);
+  if (qs('#btn-llm-load')) {
+    qs('#btn-llm-load').disabled = !isLLM;
+    qs('#btn-llm-load').classList.toggle('hidden', !isLLM || isCreateMode);
+  }
   if (qs('#btn-llm-edit')) {
     qs('#btn-llm-edit').disabled = !isLLM;
-    qs('#btn-llm-edit').classList.toggle('hidden', !isLLM || state.currentMode === 'create');
+    qs('#btn-llm-edit').classList.toggle('hidden', !isLLM || isCreateMode);
   }
-  if (qs('#btn-llm-save')) qs('#btn-llm-save').disabled = !isLLM || state.currentMode === 'view';
-  if (qs('#btn-llm-test')) qs('#btn-llm-test').disabled = !isLLM;
+  if (qs('#btn-llm-save')) {
+    qs('#btn-llm-save').disabled = !isLLM || isViewMode;
+    qs('#btn-llm-save').classList.toggle('hidden', !isLLM || isViewMode);
+    qs('#btn-llm-save').textContent = isCreateMode ? '创建并保存' : '保存配置';
+  }
+  if (qs('#btn-llm-test')) {
+    qs('#btn-llm-test').disabled = !isLLM;
+    qs('#btn-llm-test').textContent = isCreateMode ? '测试模型配置' : '测试模型';
+  }
 }
 
 function renderConnectionCenter() {
@@ -802,14 +823,17 @@ async function openLLMAPIRecord(item) {
   fillLLMAPIForm(item);
   setConnectionWorkbenchMode('llm', 'view', item.id || '');
   if (item.active) {
-    await loadCurrentLLMConfig(true, true);
-    qs('#llm-out').textContent = pretty(Object.assign({}, item, {
-      note: '当前 ACTIVE LLM_API 已同步加载到工作台，api_key 不会回显。点击“切换编辑态”后可修改并保存。'
-    }));
+    const runtimeData = await loadCurrentLLMConfig(true, true);
+    qs('#llm-out').textContent = pretty({
+      persisted_item: item,
+      active_runtime: runtimeData,
+      note: '当前 ACTIVE LLM_API 已同步加载到工作台。persisted_item 表示 SQLite 中保存的 LLM_API 记录，active_runtime 表示当前生效的运行时配置；api_key 不会回显。'
+    });
   } else {
-    qs('#llm-out').textContent = pretty(Object.assign({}, item, {
+    qs('#llm-out').textContent = pretty({
+      persisted_item: item,
       note: '查看态不回填 api_key；如需重新启用，请切换编辑态补全密钥后保存。'
-    }));
+    });
   }
   renderConnectionCenter();
   toast('LLM_API', `已打开 ${item.name || item.id || '配置'}`, 'ok');
@@ -972,8 +996,9 @@ qs('#btn-llm-save')?.addEventListener('click', async () => {
     qs('#llm-api-api-key').value = '';
     window.__connCenterState.currentLLMAPIID = data.id || payload.id || '';
     await refreshLLMAPIs();
+    let runtimeData = null;
     if (payload.activate) {
-      await loadCurrentLLMConfig(true, true);
+      runtimeData = await loadCurrentLLMConfig(true, true);
     }
     const current = (window.__connCenterState.llmAPIs || []).find((it) => it.id === (data.id || payload.id || ''));
     if (current) fillLLMAPIForm(current);
@@ -981,7 +1006,8 @@ qs('#btn-llm-save')?.addEventListener('click', async () => {
       ok: true,
       id: data.id || payload.id,
       active: !!payload.activate,
-      tags: payload.tags,
+      persisted_item: current || data.item || null,
+      active_runtime: runtimeData,
       note: payload.activate ? 'LLM_API 已保存并切换为 ACTIVE。' : 'LLM_API 已保存，可稍后再切换 ACTIVE。'
     });
     setConnectionWorkbenchMode('llm', 'view', data.id || payload.id || '');
@@ -1029,9 +1055,24 @@ function setWebhookFormMode(mode, id) {
   window.__connCenterState.currentWebhookMode = mode || 'create';
   window.__connCenterState.currentWebhookID = id || '';
   const isCreate = window.__connCenterState.currentWebhookMode === 'create';
+  const modeText = isCreate ? '新建态' : '编辑态';
   setReadonlyFieldState(['#webhook-id'], !isCreate);
+  if (qs('#webhook-workbench-mode')) qs('#webhook-workbench-mode').textContent = modeText;
+  if (qs('#webhook-workbench-type')) qs('#webhook-workbench-type').textContent = 'webhook';
+  if (qs('#webhook-workbench-record')) {
+    const label = (window.__connCenterState.currentWebhookID || qs('#webhook-id')?.value.trim() || '');
+    qs('#webhook-workbench-record').textContent = label ? `当前记录：${label}` : '';
+    qs('#webhook-workbench-record').classList.toggle('hidden', !label);
+  }
   if (qs('#btn-webhook-delete')) {
     qs('#btn-webhook-delete').disabled = !(window.__connCenterState.currentWebhookID || qs('#webhook-id')?.value.trim());
+    qs('#btn-webhook-delete').classList.toggle('hidden', isCreate);
+  }
+  if (qs('#btn-webhook-test')) {
+    qs('#btn-webhook-test').textContent = isCreate ? '测试新推送' : '测试推送';
+  }
+  if (qs('#btn-webhook-save')) {
+    qs('#btn-webhook-save').textContent = isCreate ? '创建并保存' : '保存';
   }
 }
 
@@ -1113,7 +1154,7 @@ function openWebhookCreateMode(quiet) {
   qs('#webhook-out').textContent = pretty({
     mode: 'create',
     type: 'webhook',
-    hint: '请填写 webhook-id、name、url、provider、method、headers；generic 可自定义 body-template，feishu_bot 会自动生成 payload。'
+    hint: '当前为新建态。请填写 webhook-id、name、url、provider、method、headers；可先点“测试新推送”验证，再执行“创建并保存”。generic 可自定义 body-template，feishu_bot 会自动生成 payload。'
   });
   if (!quiet) toast('webhook', '已切换到新建态', 'ok');
 }
@@ -1290,6 +1331,18 @@ window.__currentComplexStepID = '';
 window.__currentComplexRunPayload = null;
 window.__outputTemplateCache = [];
 window.__pendingJobDraft = null;
+window.__externalIPSyncTaskCache = [];
+window.__externalIPSyncResourceCache = [];
+window.__externalIPSyncResourceStatus = '将优先从已保存任务中推断可选资源。';
+window.__externalIPSyncResourceFetchAttempted = false;
+window.__jobDrawerExternalTaskOriginalID = '';
+window.__jobEditorExternalTaskOriginalID = '';
+
+const EXTERNAL_IP_SYNC_KIND = 'external_ip_sync';
+const EXTERNAL_IP_SYNC_SOURCE_TYPE = 'google_ip_ranges';
+const EXTERNAL_IP_SYNC_SOURCE_LABEL = 'Google IP Ranges';
+const EXTERNAL_IP_SYNC_SOURCE_URL = 'https://www.gstatic.com/ipranges/goog.json';
+const EXTERNAL_IP_SYNC_DEFAULT_API_PATH = '/api/open/v1/addr/management/add';
 
 function buildDraftLLMAPIOptions(selectedID) {
   const items = Array.isArray(window.__llmAPIItems) ? window.__llmAPIItems : [];
@@ -1361,12 +1414,467 @@ async function refreshLLMAPIItems() {
   }
 }
 
+function isExternalIPSyncJob(job) {
+  return String((job || {}).target_type || '').trim() === EXTERNAL_IP_SYNC_KIND;
+}
+
+function getJobKind(job) {
+  return isExternalIPSyncJob(job) ? EXTERNAL_IP_SYNC_KIND : 'schedule';
+}
+
+function buildFallbackExternalIPSyncTask(job) {
+  const scheduleID = String((job || {}).id || '').trim();
+  const targetID = String((job || {}).target_id || '').trim();
+  const baseID = targetID || scheduleID || '';
+  return {
+    id: baseID,
+    name: baseID ? `${baseID} 外部 IP 同步` : '外部 IP 同步任务',
+    source_type: EXTERNAL_IP_SYNC_SOURCE_TYPE,
+    source_url: EXTERNAL_IP_SYNC_SOURCE_URL,
+    ip_version: 'ipv4',
+    resource_id: '',
+    resource_name_snapshot: '',
+    write_action: 'append_if_missing',
+    feilian_api_path: EXTERNAL_IP_SYNC_DEFAULT_API_PATH,
+    dry_run: false,
+    skip_when_empty: true,
+    enabled: (job || {}).enabled !== false
+  };
+}
+
+function humanizeExternalIPSyncIPVersion(version) {
+  const normalized = String(version || '').trim().toLowerCase();
+  if (normalized === 'ipv6') return 'IPv6';
+  if (normalized === 'all') return 'IPv4 + IPv6';
+  return 'IPv4';
+}
+
+function getExternalIPSyncRunSummary(run) {
+  const raw = (run && (run.summary || run.external_ip_sync_summary)) || {};
+  const summary = (raw && typeof raw === 'object') ? cloneValue(raw) : {};
+  if (!summary.status && run && run.last_run) {
+    summary.status = run.last_ok ? 'success' : 'failed';
+  }
+  if (!summary.error_message && run && run.last_error) {
+    summary.error_message = run.last_error;
+  }
+  return summary;
+}
+
+function getExternalIPSyncTaskSummary(task, run) {
+  const staticSummary = ((run && run.task_summary) || (task && task.summary) || {});
+  const summary = (staticSummary && typeof staticSummary === 'object') ? cloneValue(staticSummary) : {};
+  const resourceLabel = summary.resource_label
+    || [task && task.resource_name_snapshot, task && task.resource_id].filter(Boolean).join(' / ')
+    || getExternalIPSyncResourceLabel(task && task.resource_id)
+    || (task && task.resource_id)
+    || '未选择资源';
+  const merged = Object.assign({
+    source_label: EXTERNAL_IP_SYNC_SOURCE_LABEL,
+    ip_version: (task && task.ip_version) || 'ipv4',
+    ip_version_label: humanizeExternalIPSyncIPVersion((task && task.ip_version) || (summary && summary.ip_version) || 'ipv4'),
+    resource_id: (task && task.resource_id) || '',
+    resource_name_snapshot: (task && task.resource_name_snapshot) || '',
+    resource_label: resourceLabel,
+    write_api_path: (task && task.feilian_api_path) || EXTERNAL_IP_SYNC_DEFAULT_API_PATH,
+    dry_run: task ? task.dry_run === true : false,
+    skip_when_empty: task ? task.skip_when_empty !== false : true
+  }, summary);
+  return Object.assign(merged, getExternalIPSyncRunSummary(run));
+}
+
+function buildExternalIPSyncHeadline(summary) {
+  const sourceLabel = summary && summary.source_label ? summary.source_label : EXTERNAL_IP_SYNC_SOURCE_LABEL;
+  const versionLabel = summary && summary.ip_version_label
+    ? summary.ip_version_label
+    : humanizeExternalIPSyncIPVersion(summary && summary.ip_version);
+  const resourceLabel = summary && summary.resource_label ? summary.resource_label : '未选择资源';
+  return `${sourceLabel} / ${versionLabel} -> ${resourceLabel}`;
+}
+
+function buildExternalIPSyncRunMeta(summary, run) {
+  const hasRun = !!(run && run.last_run && run.last_run !== '0001-01-01T00:00:00Z');
+  if (!hasRun) return '最近一次：暂无运行记录';
+  const status = String((summary && summary.status) || '').trim();
+  const sourceTotal = Number(summary && summary.source_total);
+  const existingTotal = Number(summary && summary.existing_total);
+  const toAddTotal = Number(summary && summary.to_add_total);
+  const addedTotal = Number(summary && summary.added_total);
+  if (status === 'dry_run') {
+    return `最近一次：Dry Run，待新增 ${Number.isFinite(toAddTotal) ? toAddTotal : 0} 条，资源现有 ${Number.isFinite(existingTotal) ? existingTotal : 0} 条`;
+  }
+  if (status === 'skipped') {
+    return `最近一次：无需新增，源共 ${Number.isFinite(sourceTotal) ? sourceTotal : 0} 条，资源现有 ${Number.isFinite(existingTotal) ? existingTotal : 0} 条`;
+  }
+  if (status === 'failed') {
+    return `最近一次：执行失败，待新增 ${Number.isFinite(toAddTotal) ? toAddTotal : 0} 条${summary && summary.error_message ? `，错误：${summary.error_message}` : ''}`;
+  }
+  return `最近一次：新增 ${Number.isFinite(addedTotal) ? addedTotal : 0} 条，跳过 ${Number.isFinite(existingTotal) ? existingTotal : 0} 条`;
+}
+
+function formatExternalIPSyncMetric(summary, key, hasRun) {
+  const value = Number(summary && summary[key]);
+  if (Number.isFinite(value)) return String(value);
+  return hasRun ? '0' : '暂无';
+}
+
+function getExternalIPSyncTaskByID(id) {
+  const taskID = String(id || '').trim();
+  if (!taskID) return null;
+  return (window.__externalIPSyncTaskCache || []).find((item) => String(item.id || '').trim() === taskID) || null;
+}
+
+function upsertExternalIPSyncTaskCache(task) {
+  const item = cloneValue(task || {});
+  const id = String(item.id || '').trim();
+  if (!id) return;
+  const list = Array.isArray(window.__externalIPSyncTaskCache) ? window.__externalIPSyncTaskCache.slice() : [];
+  const next = list.filter((it) => String(it.id || '').trim() !== id);
+  next.push(item);
+  window.__externalIPSyncTaskCache = next.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+  mergeExternalIPSyncResourceCache(deriveExternalIPSyncResourcesFromTasks(window.__externalIPSyncTaskCache));
+}
+
+function normalizeExternalIPSyncResourceItem(raw) {
+  const item = raw || {};
+  const id = String(item.resource_id || item.id || item.value || '').trim();
+  if (!id) return null;
+  const name = String(item.resource_name_snapshot || item.name || item.label || '').trim();
+  return {
+    id,
+    name,
+    label: name ? `${name} · ${id}` : id
+  };
+}
+
+function deriveExternalIPSyncResourcesFromTasks(tasks) {
+  const map = new Map();
+  (tasks || []).forEach((task) => {
+    const normalized = normalizeExternalIPSyncResourceItem({
+      resource_id: task.resource_id,
+      resource_name_snapshot: task.resource_name_snapshot
+    });
+    if (!normalized) return;
+    if (!map.has(normalized.id)) map.set(normalized.id, normalized);
+  });
+  return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function mergeExternalIPSyncResourceCache(items) {
+  const map = new Map();
+  (window.__externalIPSyncResourceCache || []).forEach((item) => {
+    const normalized = normalizeExternalIPSyncResourceItem(item);
+    if (normalized) map.set(normalized.id, normalized);
+  });
+  (items || []).forEach((item) => {
+    const normalized = normalizeExternalIPSyncResourceItem(item);
+    if (normalized) map.set(normalized.id, normalized);
+  });
+  window.__externalIPSyncResourceCache = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+async function ensureExternalIPSyncTaskLoaded(id) {
+  const taskID = String(id || '').trim();
+  if (!taskID) return null;
+  const cached = getExternalIPSyncTaskByID(taskID);
+  if (cached) return cached;
+  try {
+    const data = await fetchJSON(`/api/v1/external-ip-sync-tasks/${encodeURIComponent(taskID)}`);
+    if (data && data.task) {
+      const task = cloneValue(data.task);
+      if (data.summary && typeof data.summary === 'object') task.summary = cloneValue(data.summary);
+      upsertExternalIPSyncTaskCache(task);
+      return task;
+    }
+  } catch {}
+  return null;
+}
+
+async function refreshExternalIPSyncResourceCatalog(quiet) {
+  if (window.__externalIPSyncResourceFetchAttempted) return;
+  window.__externalIPSyncResourceFetchAttempted = true;
+  mergeExternalIPSyncResourceCache(deriveExternalIPSyncResourcesFromTasks(window.__externalIPSyncTaskCache || []));
+  try {
+    const data = await fetchJSON('/api/v1/external-ip-sync-resources');
+    const items = Array.isArray(data.items) ? data.items : [];
+    mergeExternalIPSyncResourceCache(items);
+    window.__externalIPSyncResourceStatus = window.__externalIPSyncResourceCache.length
+      ? '已加载外部 IP 同步资源下拉，可直接选择已有资源。'
+      : '资源接口已响应，但当前没有返回可选资源，可直接手填 resource_id。';
+  } catch (e) {
+    window.__externalIPSyncResourceStatus = window.__externalIPSyncResourceCache.length
+      ? '未发现专用资源下拉接口，当前下拉基于已保存任务推断；也可直接手填 resource_id。'
+      : '未发现专用资源下拉接口，可直接手填 resource_id。';
+    if (!quiet) toast('资源下拉兜底', window.__externalIPSyncResourceStatus, '');
+  }
+}
+
+async function refreshExternalIPSyncTaskCache(quiet) {
+  try {
+    const data = await fetchJSON('/api/v1/external-ip-sync-tasks');
+    window.__externalIPSyncTaskCache = Array.isArray(data.items) ? data.items : [];
+    mergeExternalIPSyncResourceCache(deriveExternalIPSyncResourcesFromTasks(window.__externalIPSyncTaskCache));
+    refreshExternalIPSyncResourceCatalog(true);
+    renderJobsTable();
+    if (window.__currentJobName) {
+      const current = (window.__jobsCache || []).find((job) => job.id === window.__currentJobName);
+      if (current && isExternalIPSyncJob(current)) renderJobDetail(current, {}, (window.__jobRunCache || {})[current.id] || {});
+    }
+    if (!quiet) toast('外部 IP 同步', '已刷新任务定义缓存', 'ok');
+  } catch (e) {
+    window.__externalIPSyncTaskCache = [];
+    mergeExternalIPSyncResourceCache([]);
+    if (!quiet) toast('外部 IP 同步', String(e), '');
+  }
+}
+
+function buildExternalIPSyncResourceOptions(selectedID) {
+  const selected = String(selectedID || '').trim();
+  const items = Array.isArray(window.__externalIPSyncResourceCache) ? window.__externalIPSyncResourceCache : [];
+  const parts = ['<option value="">请选择已有 IP 资源（可选）</option>'];
+  const hasSelected = !!selected && items.some((item) => item.id === selected);
+  if (selected && !hasSelected) {
+    parts.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} · 手工输入 / 历史值`)}</option>`);
+  }
+  items.forEach((item) => {
+    parts.push(`<option value="${escapeHtml(item.id)}" ${item.id === selected ? 'selected' : ''}>${escapeHtml(item.label)}</option>`);
+  });
+  return parts.join('');
+}
+
+function getExternalIPSyncResourceLabel(resourceID) {
+  const item = (window.__externalIPSyncResourceCache || []).find((it) => it.id === resourceID);
+  return item ? (item.label || item.id) : resourceID;
+}
+
+function renderExternalIPSyncResourceHint(prefix) {
+  const host = qs(`#${prefix}-resource-hint`);
+  if (!host) return;
+  const selectedID = qs(`#${prefix}-external-resource-select`)?.value || '';
+  const manualID = qs(`#${prefix}-external-resource-id`)?.value.trim() || '';
+  if (selectedID) {
+    host.textContent = `已选择资源：${getExternalIPSyncResourceLabel(selectedID)}。如需使用未列出的资源，可继续手填覆盖。`;
+    return;
+  }
+  if (manualID) {
+    host.textContent = `当前使用手工填写的 resource_id：${manualID}`;
+    return;
+  }
+  host.textContent = window.__externalIPSyncResourceStatus || '可直接手填 resource_id。';
+}
+
+function syncExternalIPSyncResourceSelection(prefix) {
+  const select = qs(`#${prefix}-external-resource-select`);
+  const manual = qs(`#${prefix}-external-resource-id`);
+  const name = qs(`#${prefix}-external-resource-name`);
+  if (!select || !manual) return;
+  const selectedID = select.value || '';
+  const selectedItem = (window.__externalIPSyncResourceCache || []).find((item) => item.id === selectedID);
+  if (selectedID) {
+    manual.value = selectedID;
+    if (name && selectedItem) {
+      name.value = selectedItem.name || '';
+      name.dataset.autoFilled = 'true';
+    }
+  }
+  renderExternalIPSyncResourceHint(prefix);
+}
+
+function syncExternalIPSyncResourceInput(prefix) {
+  const select = qs(`#${prefix}-external-resource-select`);
+  const manual = qs(`#${prefix}-external-resource-id`);
+  const name = qs(`#${prefix}-external-resource-name`);
+  if (!manual) return;
+  const manualID = manual.value.trim();
+  const matched = (window.__externalIPSyncResourceCache || []).find((item) => item.id === manualID);
+  if (select) select.value = matched ? matched.id : '';
+  if (name && matched && name.dataset.autoFilled === 'true') {
+    name.value = matched.name || '';
+  }
+  renderExternalIPSyncResourceHint(prefix);
+}
+
+function renderExternalIPSyncFields(prefix, task) {
+  const current = Object.assign(buildFallbackExternalIPSyncTask({}), cloneValue(task || {}));
+  return `
+    <div class="external-job-panel" id="${prefix}-external-section">
+      <div class="form-section external-job-block">
+        <div class="section-head">
+          <div>
+            <div class="section-title">外部 IP 同步任务</div>
+            <div class="subtitle">保存时会先写入 external-ip-sync-task，再写入 target_type=${EXTERNAL_IP_SYNC_KIND} 的 job_schedule。</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>external task id</label>
+            <input id="${prefix}-external-id" value="${escapeHtml(current.id || '')}" placeholder="默认可直接沿用 schedule_id" />
+          </div>
+          <div class="field">
+            <label>external task name</label>
+            <input id="${prefix}-external-name" value="${escapeHtml(current.name || '')}" placeholder="例如 Google IPv4 同步" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Google 源</label>
+            <input value="${escapeHtml(EXTERNAL_IP_SYNC_SOURCE_LABEL)}" readonly />
+          </div>
+          <div class="field" style="flex:1.5">
+            <label>source_url</label>
+            <input value="${escapeHtml(EXTERNAL_IP_SYNC_SOURCE_URL)}" readonly />
+          </div>
+          <div class="field">
+            <label>IP 版本</label>
+            <select id="${prefix}-external-ip-version">
+              <option value="ipv4" ${current.ip_version === 'ipv4' ? 'selected' : ''}>IPv4</option>
+              <option value="ipv6" ${current.ip_version === 'ipv6' ? 'selected' : ''}>IPv6</option>
+              <option value="all" ${current.ip_version === 'all' ? 'selected' : ''}>全部</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>资源下拉</label>
+            <select id="${prefix}-external-resource-select">${buildExternalIPSyncResourceOptions(current.resource_id || '')}</select>
+          </div>
+          <div class="field">
+            <label>resource_id（可手填覆盖）</label>
+            <input id="${prefix}-external-resource-id" value="${escapeHtml(current.resource_id || '')}" placeholder="例如 res_google_ipv4" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>资源名称快照（可选）</label>
+            <input id="${prefix}-external-resource-name" value="${escapeHtml(current.resource_name_snapshot || '')}" placeholder="下拉命中时自动回填" />
+          </div>
+          <div class="field">
+            <label>写入路径</label>
+            <select id="${prefix}-external-api-path">
+              <option value="/api/open/v1/addr/management/add" ${current.feilian_api_path === '/api/open/v1/addr/management/add' ? 'selected' : ''}>/api/open/v1/addr/management/add</option>
+              <option value="/api/open/v1/addr/management/update" ${current.feilian_api_path === '/api/open/v1/addr/management/update' ? 'selected' : ''}>/api/open/v1/addr/management/update</option>
+            </select>
+          </div>
+        </div>
+        <div class="subtitle external-job-resource-hint" id="${prefix}-resource-hint">${escapeHtml(window.__externalIPSyncResourceStatus || '')}</div>
+        <div class="row">
+          <label class="checkbox-line">
+            <input type="checkbox" id="${prefix}-external-dry-run" ${current.dry_run ? 'checked' : ''} />
+            <span>dry-run（仅预览，不写入飞连）</span>
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" id="${prefix}-external-skip-empty" ${current.skip_when_empty !== false ? 'checked' : ''} />
+            <span>skip-when-empty（无增量时跳过写入）</span>
+          </label>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function syncJobKindState(prefix) {
+  const kind = qs(`#${prefix}-kind`)?.value || 'schedule';
+  const timeMode = qs(`#${prefix}-time-mode`);
+  const isExternal = kind === EXTERNAL_IP_SYNC_KIND;
+  qs(`#${prefix}-target-row`)?.classList.toggle('hidden', isExternal);
+  qs(`#${prefix}-external-host`)?.classList.toggle('hidden', !isExternal);
+  qs(`#${prefix}-time-mode-row`)?.classList.toggle('hidden', isExternal);
+  if (timeMode) {
+    if (isExternal) timeMode.value = 'daily';
+    timeMode.disabled = isExternal;
+  }
+  const currentMode = isExternal ? 'daily' : (timeMode?.value || 'daily');
+  qs(`#${prefix}-daily-row`)?.classList.toggle('hidden', currentMode !== 'daily');
+  qs(`#${prefix}-interval-row`)?.classList.toggle('hidden', currentMode !== 'interval');
+  if (isExternal) {
+    renderExternalIPSyncResourceHint(prefix);
+    refreshExternalIPSyncResourceCatalog(true);
+  }
+}
+
+function buildExternalIPSyncTaskPayload(prefix, job) {
+  const base = buildFallbackExternalIPSyncTask(job);
+  const scheduleID = qs(`#${prefix}-id`)?.value.trim() || job.id || '';
+  const taskID = qs(`#${prefix}-external-id`)?.value.trim() || base.id || scheduleID;
+  const taskName = qs(`#${prefix}-external-name`)?.value.trim() || base.name || `${taskID || scheduleID || 'external_ip_sync'} 外部 IP 同步`;
+  const resourceID = qs(`#${prefix}-external-resource-id`)?.value.trim() || qs(`#${prefix}-external-resource-select`)?.value || '';
+  return {
+    id: taskID,
+    name: taskName,
+    source_type: EXTERNAL_IP_SYNC_SOURCE_TYPE,
+    source_url: EXTERNAL_IP_SYNC_SOURCE_URL,
+    ip_version: qs(`#${prefix}-external-ip-version`)?.value || base.ip_version || 'ipv4',
+    resource_id: resourceID,
+    resource_name_snapshot: qs(`#${prefix}-external-resource-name`)?.value.trim() || '',
+    write_action: 'append_if_missing',
+    feilian_api_path: qs(`#${prefix}-external-api-path`)?.value || EXTERNAL_IP_SYNC_DEFAULT_API_PATH,
+    dry_run: qs(`#${prefix}-external-dry-run`)?.checked === true,
+    skip_when_empty: qs(`#${prefix}-external-skip-empty`)?.checked === true,
+    enabled: qs(`#${prefix}-enabled`)?.value === 'true'
+  };
+}
+
+async function persistJobFromEditor(prefix, baseJob, opts) {
+  const options = opts || {};
+  const payload = cloneValue(baseJob || {});
+  const kind = qs(`#${prefix}-kind`)?.value || getJobKind(payload);
+  payload.id = qs(`#${prefix}-id`)?.value.trim() || payload.id || '';
+  payload.enabled = qs(`#${prefix}-enabled`)?.value === 'true';
+  payload.start_at = qs(`#${prefix}-start-at`)?.value.trim() || '';
+  payload.end_at = qs(`#${prefix}-end-at`)?.value.trim() || '';
+  Object.assign(payload, getWebhookReferencePayload(`#${prefix}-webhook-config-id`, `#${prefix}-webhook-enabled`));
+  let externalTask = null;
+  let externalTaskSaved = false;
+  try {
+    if (kind === EXTERNAL_IP_SYNC_KIND) {
+      externalTask = buildExternalIPSyncTaskPayload(prefix, payload);
+      await fetchJSON('/api/v1/external-ip-sync-tasks', { method: 'POST', body: JSON.stringify(externalTask) });
+      externalTaskSaved = true;
+      upsertExternalIPSyncTaskCache(externalTask);
+      payload.target_type = EXTERNAL_IP_SYNC_KIND;
+      payload.target_id = externalTask.id;
+      payload.draft_id = '';
+      qs(`#${prefix}-time-mode`).value = 'daily';
+      Object.assign(payload, buildSchedulePayloadFromUI(payload, {
+        mode: `#${prefix}-time-mode`,
+        hour: `#${prefix}-daily-hour`,
+        minute: `#${prefix}-daily-minute`,
+        interval: `#${prefix}-interval-preset`,
+      }));
+    } else {
+      const targetValue = qs(`#${prefix}-target`)?.value.trim().split(':') || [];
+      payload.target_type = targetValue[0] || '';
+      payload.target_id = targetValue[1] || '';
+      payload.draft_id = payload.target_type === 'task_draft' ? payload.target_id : '';
+      Object.assign(payload, buildSchedulePayloadFromUI(payload, {
+        mode: `#${prefix}-time-mode`,
+        hour: `#${prefix}-daily-hour`,
+        minute: `#${prefix}-daily-minute`,
+        interval: `#${prefix}-interval-preset`,
+      }));
+    }
+    if (options.isCreate) {
+      await fetchJSON('/api/v1/job-schedules', { method: 'POST', body: JSON.stringify(payload) });
+    } else {
+      await fetchJSON(`/api/v1/job-schedules/${encodeURIComponent(options.originalID || payload.id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+    }
+    return { payload, externalTask };
+  } catch (err) {
+    err.externalTaskSaved = externalTaskSaved;
+    err.externalTask = externalTask;
+    throw err;
+  }
+}
+
 async function refreshJobs(quiet) {
   try {
     const data = await fetchJSON('/api/v1/job-schedules');
     qs('#jobs').textContent = JSON.stringify(data, null, 2);
     window.__jobsCache = data.items || [];
     window.__jobRunCache = data.schedule_status || {};
+    if ((window.__jobsCache || []).some((job) => isExternalIPSyncJob(job)) || !(window.__externalIPSyncTaskCache || []).length) {
+      refreshExternalIPSyncTaskCache(true);
+    }
     renderJobsTable();
     if (!quiet) toast('定时任务清单', '已刷新任务列表', 'ok');
   } catch (e) {
@@ -1781,10 +2289,12 @@ function buildSchedulePayloadFromUI(base, ids) {
 }
 
 function buildDefaultJobDraft() {
+  const firstDraftID = (window.__taskDraftCache[0] || {}).id || '';
+  const firstComplexID = (window.__complexTaskCache[0] || {}).id || '';
   return {
     id: '',
-    target_type: (window.__taskDraftCache[0] || {}).id ? 'task_draft' : 'complex_task',
-    target_id: (window.__taskDraftCache[0] || {}).id || (window.__complexTaskCache[0] || {}).id || '',
+    target_type: firstDraftID ? 'task_draft' : (firstComplexID ? 'complex_task' : ''),
+    target_id: firstDraftID || firstComplexID || '',
     enabled: true,
     webhook_config_id: '',
     webhook_enabled: false,
@@ -1814,11 +2324,6 @@ function takePendingJobDraft(baseDraft) {
 
 function openCreateJobEditor(prefill) {
   if (prefill) window.__pendingJobDraft = cloneValue(prefill);
-  const hasPending = !!(window.__pendingJobDraft && Object.keys(window.__pendingJobDraft).length);
-  if (!hasPending && !(window.__taskDraftCache || []).length && !(window.__complexTaskCache || []).length) {
-    toast('新建定时任务', '请先创建至少一个单次/周期任务草稿或运营agent', '');
-    return false;
-  }
   const draft = takePendingJobDraft(buildDefaultJobDraft());
   setView('tasks');
   switchTaskSubpage('schedule');
@@ -2419,12 +2924,24 @@ function renderJobsTable() {
   jobs.forEach(j => {
     const run = (window.__jobRunCache || {})[j.id] || {};
     const targetId = j.target_id || j.draft_id || '';
+    const externalTask = isExternalIPSyncJob(j) ? (getExternalIPSyncTaskByID(targetId) || buildFallbackExternalIPSyncTask(j)) : null;
+    const externalSummary = isExternalIPSyncJob(j) ? getExternalIPSyncTaskSummary(externalTask, run) : null;
+    const targetLabel = isExternalIPSyncJob(j)
+      ? (externalTask.name || targetId || '外部 IP 同步')
+      : targetId;
+    const targetTypeLabel = isExternalIPSyncJob(j)
+      ? `${EXTERNAL_IP_SYNC_KIND}${externalTask ? ` · ${externalTask.ip_version || 'ipv4'}` : ''}`
+      : (j.target_type || (j.draft_id ? 'task_draft' : ''));
     const tr = document.createElement('tr');
     if (window.__currentJobName === j.id) tr.classList.add('jobs-table-row-active');
     const scheduleSummary = buildJobScheduleSummary(j);
     tr.innerHTML = `
       <td><b>${escapeHtml(j.id || '')}</b></td>
-      <td><code>${escapeHtml(targetId)}</code><div class="subtitle">${escapeHtml(j.target_type || (j.draft_id ? 'task_draft' : ''))}</div></td>
+      <td>${isExternalIPSyncJob(j)
+        ? `<div>${escapeHtml(buildExternalIPSyncHeadline(externalSummary))}</div>
+           <div class="subtitle">${escapeHtml(targetLabel)}</div>
+           <div class="subtitle">${escapeHtml(buildExternalIPSyncRunMeta(externalSummary, run))}</div>`
+        : `<code>${escapeHtml(targetLabel)}</code><div class="subtitle">${escapeHtml(targetTypeLabel)}</div>`}</td>
       <td>${escapeHtml(scheduleSummary.modeLabel)}</td>
       <td>${escapeHtml(scheduleSummary.short)}<div class="subtitle">${escapeHtml(j.start_at || '')}${j.end_at ? ` → ${escapeHtml(j.end_at)}` : ''}</div><div class="subtitle">${escapeHtml(run.last_run || '')}</div></td>
       <td>${j.enabled ? '<span class="pill ok">ENABLED</span>' : '<span class="pill">DISABLED</span>'}</td>
@@ -2494,8 +3011,17 @@ function renderJobDetail(job, payloadDraft, run) {
     ? payloadDraft
     : ((window.__taskDraftCache || []).find(it => it.id === targetID) || {});
   const complexTask = (window.__complexTaskCache || []).find(it => it.id === targetID) || {};
+  const externalTask = targetType === EXTERNAL_IP_SYNC_KIND
+    ? (getExternalIPSyncTaskByID(targetID) || buildFallbackExternalIPSyncTask(job))
+    : null;
+  const targetName = targetType === EXTERNAL_IP_SYNC_KIND
+    ? (externalTask.name || '外部 IP 同步任务')
+    : (draft.name || complexTask.name || '未找到目标');
   const scheduleSummary = buildJobScheduleSummary(job);
   const hasRun = !!(run && run.last_run && run.last_run !== '0001-01-01T00:00:00Z');
+  const externalSummary = targetType === EXTERNAL_IP_SYNC_KIND ? getExternalIPSyncTaskSummary(externalTask, run) : {};
+  const externalHeadline = targetType === EXTERNAL_IP_SYNC_KIND ? buildExternalIPSyncHeadline(externalSummary) : '';
+  const externalRunMeta = targetType === EXTERNAL_IP_SYNC_KIND ? buildExternalIPSyncRunMeta(externalSummary, run) : '';
   const box = qs('#job-detail');
   qs('#job-detail-empty').style.display = 'none';
   box.innerHTML = `
@@ -2510,7 +3036,7 @@ function renderJobDetail(job, payloadDraft, run) {
         <div class="k">Schedule ID</div><div class="v">${escapeHtml(job.id || '')}</div>
         <div class="k">Target Type</div><div class="v">${escapeHtml(targetType)}</div>
         <div class="k">Target ID</div><div class="v"><code>${escapeHtml(targetID)}</code></div>
-        <div class="k">Target Name</div><div class="v">${escapeHtml(draft.name || complexTask.name || '未找到目标')}</div>
+        <div class="k">Target Name</div><div class="v">${escapeHtml(targetName)}</div>
         <div class="k">Webhook</div><div class="v">${escapeHtml(job.webhook_config_id || '未绑定')}</div>
         <div class="k">Webhook Push</div><div class="v">${job.webhook_enabled ? 'Yes' : 'No'}</div>
         <div class="k">调度方式</div><div class="v">${escapeHtml(scheduleSummary.short)}</div>
@@ -2540,6 +3066,30 @@ function renderJobDetail(job, payloadDraft, run) {
         <div class="k">Error</div><div class="v">${escapeHtml((run && run.last_error) || '')}</div>
       </div>
     </div>
+    ${targetType === EXTERNAL_IP_SYNC_KIND ? `
+    <div class="card" style="box-shadow:none">
+      <div style="font-weight:750">外部 IP 同步摘要</div>
+      <div class="subtitle">${escapeHtml(externalHeadline)}</div>
+      <div class="alert-block ${!hasRun ? '' : ((externalSummary.status || '') === 'failed' ? 'alert-error' : 'alert-success')}">
+        <div class="alert-title">最近一次同步摘要</div>
+        <div>${escapeHtml(externalRunMeta)}</div>
+      </div>
+      <div class="kv">
+        <div class="k">数据源</div><div class="v">${escapeHtml(externalSummary.source_label || EXTERNAL_IP_SYNC_SOURCE_LABEL)}</div>
+        <div class="k">IP 版本</div><div class="v">${escapeHtml(externalSummary.ip_version_label || humanizeExternalIPSyncIPVersion(externalTask.ip_version || 'ipv4'))}</div>
+        <div class="k">目标资源</div><div class="v"><code>${escapeHtml(externalTask.resource_id || '')}</code>${externalTask.resource_name_snapshot ? ` · ${escapeHtml(externalTask.resource_name_snapshot)}` : ''}</div>
+        <div class="k">写入接口</div><div class="v"><code>${escapeHtml(externalSummary.write_api_path || EXTERNAL_IP_SYNC_DEFAULT_API_PATH)}</code></div>
+        <div class="k">源总量</div><div class="v">${escapeHtml(formatExternalIPSyncMetric(externalSummary, 'source_total', hasRun))}</div>
+        <div class="k">过滤后</div><div class="v">${escapeHtml(formatExternalIPSyncMetric(externalSummary, 'filtered_total', hasRun))}</div>
+        <div class="k">资源现有</div><div class="v">${escapeHtml(formatExternalIPSyncMetric(externalSummary, 'existing_total', hasRun))}</div>
+        <div class="k">待新增</div><div class="v">${escapeHtml(formatExternalIPSyncMetric(externalSummary, 'to_add_total', hasRun))}</div>
+        <div class="k">实际新增</div><div class="v">${escapeHtml(formatExternalIPSyncMetric(externalSummary, 'added_total', hasRun))}</div>
+        <div class="k">最近状态</div><div class="v">${escapeHtml((externalSummary.status || '').trim() || '暂无')}</div>
+        <div class="k">dry-run</div><div class="v">${externalSummary.dry_run ? 'Yes' : 'No'}</div>
+        <div class="k">skip-when-empty</div><div class="v">${externalSummary.skip_when_empty !== false ? 'Yes' : 'No'}</div>
+        <div class="k">错误信息</div><div class="v">${escapeHtml(externalSummary.error_message || '')}</div>
+      </div>
+    </div>` : `
     <div class="card" style="box-shadow:none">
       <div style="font-weight:750">草稿摘要</div>
       <div class="kv">
@@ -2549,7 +3099,7 @@ function renderJobDetail(job, payloadDraft, run) {
         <div class="k">LLM</div><div class="v"><code>${escapeHtml(JSON.stringify(draft.llm_config || {}))}</code></div>
         <div class="k">Steps</div><div class="v">${(complexTask.steps || []).length || 0}</div>
       </div>
-    </div>
+    </div>`}
     <div class="row">
       <button class="btn" id="btn-job-run">手动运行</button>
       <button class="btn" id="btn-job-edit-quick">快速编辑</button>
@@ -2594,18 +3144,32 @@ function renderJobDetail(job, payloadDraft, run) {
 function openJobDrawer(job, opts) {
   window.__jobDrawerIsCreate = !!(opts && opts.isCreate);
   window.__jobDrawerOriginalID = job.id || '';
+  window.__jobDrawerExternalTaskOriginalID = job.target_id || '';
   const webhookHint = getWebhookReferenceHintText(getWebhookCatalogItem(job.webhook_config_id || ''));
   const uiState = inferScheduleUIState(job);
+  const kind = getJobKind(job);
+  const externalTask = kind === EXTERNAL_IP_SYNC_KIND
+    ? (getExternalIPSyncTaskByID(job.target_id || '') || buildFallbackExternalIPSyncTask(job))
+    : buildFallbackExternalIPSyncTask(job);
   const box = qs('#job-drawer-body');
   box.innerHTML = `
     <div class="row">
       <div class="field"><label>schedule_id</label><input id="job-drawer-id" value="${escapeHtml(job.id || '')}" /></div>
+      <div class="field"><label>任务类型</label>
+        <select id="job-drawer-kind">
+          <option value="schedule" ${kind === 'schedule' ? 'selected' : ''}>常规调度</option>
+          <option value="${EXTERNAL_IP_SYNC_KIND}" ${kind === EXTERNAL_IP_SYNC_KIND ? 'selected' : ''}>外部 IP 同步</option>
+        </select>
+        <div class="subtitle">外部模式会先保存 external-ip-sync-task，再保存 job_schedule。</div>
+      </div>
+    </div>
+    <div class="row" id="job-drawer-target-row">
       <div class="field"><label>执行目标</label>
         <select id="job-drawer-target">${buildScheduleTargetOptions(job.target_type || (job.draft_id ? 'task_draft' : ''), job.target_id || job.draft_id || '')}</select>
       </div>
     </div>
     <div class="row">
-      <div class="field"><label>任务定时窗口</label>
+      <div class="field" id="job-drawer-time-mode-row"><label>任务定时窗口</label>
         <select id="job-drawer-time-mode">
           <option value="daily" ${uiState.mode === 'daily' ? 'selected' : ''}>每日定时</option>
           <option value="interval" ${uiState.mode === 'interval' ? 'selected' : ''}>固定间隔</option>
@@ -2623,6 +3187,9 @@ function openJobDrawer(job, opts) {
         <label>间隔</label>
         <select id="job-drawer-interval-preset">${buildIntervalPresetOptions(uiState.intervalPreset || '1h')}</select>
       </div>
+    </div>
+    <div id="job-drawer-external-host" class="hidden">
+      ${renderExternalIPSyncFields('job-drawer', externalTask)}
     </div>
     <div class="row">
       <div class="field"><label>start_at</label><input id="job-drawer-start-at" value="${escapeHtml(job.start_at || '')}" placeholder="2026-06-04T09:00:00+08:00" /></div>
@@ -2645,52 +3212,49 @@ function openJobDrawer(job, opts) {
   `;
   qs('#job-drawer').classList.remove('hidden');
   toggleJobDrawerScheduleFields();
+  renderExternalIPSyncResourceHint('job-drawer');
+  qs('#job-drawer-kind')?.addEventListener('change', () => toggleJobDrawerScheduleFields());
   qs('#job-drawer-time-mode')?.addEventListener('change', () => toggleJobDrawerScheduleFields());
   qs('#job-drawer-webhook-config-id')?.addEventListener('change', () => {
     syncWebhookReferenceEnabledState('#job-drawer-webhook-config-id', '#job-drawer-webhook-enabled', { autoEnable: true });
     renderWebhookReferenceHint('#job-drawer-webhook-config-id', '#job-drawer-webhook-auto-hint');
   });
+  qs('#job-drawer-external-resource-select')?.addEventListener('change', () => syncExternalIPSyncResourceSelection('job-drawer'));
+  qs('#job-drawer-external-resource-id')?.addEventListener('input', () => syncExternalIPSyncResourceInput('job-drawer'));
   qs('#job-drawer-save')?.addEventListener('click', async () => {
-    const updated = cloneValue(job);
-    updated.id = qs('#job-drawer-id').value.trim();
-    const targetValue = qs('#job-drawer-target').value.trim().split(':');
-    updated.target_type = targetValue[0] || 'task_draft';
-    updated.target_id = targetValue[1] || '';
-    updated.draft_id = updated.target_type === 'task_draft' ? updated.target_id : '';
-    updated.enabled = qs('#job-drawer-enabled').value === 'true';
-    updated.start_at = qs('#job-drawer-start-at').value.trim();
-    updated.end_at = qs('#job-drawer-end-at').value.trim();
-    Object.assign(updated, buildSchedulePayloadFromUI(updated, {
-      mode: '#job-drawer-time-mode',
-      hour: '#job-drawer-daily-hour',
-      minute: '#job-drawer-daily-minute',
-      interval: '#job-drawer-interval-preset',
-    }));
-    Object.assign(updated, getWebhookReferencePayload('#job-drawer-webhook-config-id', '#job-drawer-webhook-enabled'));
     try {
-      if (window.__jobDrawerIsCreate) {
-        await fetchJSON('/api/v1/job-schedules', { method: 'POST', body: JSON.stringify(updated) });
-      } else {
-        await fetchJSON(`/api/v1/job-schedules/${encodeURIComponent(window.__jobDrawerOriginalID || updated.id)}`, { method: 'PUT', body: JSON.stringify(updated) });
-      }
-      toast('保存成功', updated.id, 'ok');
+      const { payload } = await persistJobFromEditor('job-drawer', job, {
+        isCreate: window.__jobDrawerIsCreate,
+        originalID: window.__jobDrawerOriginalID
+      });
+      toast('保存成功', payload.id, 'ok');
       closeJobDrawer();
       refreshJobs(true);
-      loadJobDetail(updated.id);
-    } catch (e) { toast('保存失败', String(e), ''); }
+      loadJobDetail(payload.id);
+    } catch (e) {
+      if (e && e.externalTaskSaved && e.externalTask) {
+        toast('调度保存失败', `external-ip-sync-task ${e.externalTask.id} 已保存，但调度保存失败：${String(e)}`, '');
+        return;
+      }
+      toast('保存失败', String(e), '');
+    }
   });
+  if (kind === EXTERNAL_IP_SYNC_KIND && !getExternalIPSyncTaskByID(job.target_id || '') && job.target_id) {
+    ensureExternalIPSyncTaskLoaded(job.target_id).then((loaded) => {
+      if (!loaded) return;
+      if (qs('#job-drawer')?.classList.contains('hidden')) return;
+      if ((qs('#job-drawer-id')?.value || '').trim() !== String(job.id || '').trim()) return;
+      openJobDrawer(Object.assign({}, job), opts);
+    });
+  }
 }
 
 function toggleJobDrawerScheduleFields() {
-  const mode = qs('#job-drawer-time-mode')?.value || 'daily';
-  qs('#job-drawer-daily-row')?.classList.toggle('hidden', mode !== 'daily');
-  qs('#job-drawer-interval-row')?.classList.toggle('hidden', mode !== 'interval');
+  syncJobKindState('job-drawer');
 }
 
 function toggleAdvancedJobEditorScheduleFields() {
-  const mode = qs('#job-form-time-mode')?.value || 'daily';
-  qs('#job-form-daily-row')?.classList.toggle('hidden', mode !== 'daily');
-  qs('#job-form-interval-row')?.classList.toggle('hidden', mode !== 'interval');
+  syncJobKindState('job-form');
 }
 
 function closeJobDrawer() {
@@ -2700,6 +3264,7 @@ function closeJobDrawer() {
 function openAdvancedJobEditor(job, opts) {
   window.__jobEditorIsCreate = !!(opts && opts.isCreate);
   window.__jobEditorOriginalName = job.id || '';
+  window.__jobEditorExternalTaskOriginalID = job.target_id || '';
   window.__jobEditorCurrent = cloneValue(job);
   switchJobEditorMode('form');
   renderAdvancedEditorForm(window.__jobEditorCurrent);
@@ -2724,15 +3289,28 @@ function renderAdvancedEditorForm(job) {
   const box = qs('#job-editor-form');
   const webhookHint = getWebhookReferenceHintText(getWebhookCatalogItem(job.webhook_config_id || ''));
   const uiState = inferScheduleUIState(job);
+  const kind = getJobKind(job);
+  const externalTask = kind === EXTERNAL_IP_SYNC_KIND
+    ? (getExternalIPSyncTaskByID(job.target_id || '') || buildFallbackExternalIPSyncTask(job))
+    : buildFallbackExternalIPSyncTask(job);
   box.innerHTML = `
     <div class="row">
       <div class="field"><label>schedule_id</label><input id="job-form-id" value="${escapeHtml(job.id || '')}" /></div>
+      <div class="field"><label>任务类型</label>
+        <select id="job-form-kind">
+          <option value="schedule" ${kind === 'schedule' ? 'selected' : ''}>常规调度</option>
+          <option value="${EXTERNAL_IP_SYNC_KIND}" ${kind === EXTERNAL_IP_SYNC_KIND ? 'selected' : ''}>外部 IP 同步</option>
+        </select>
+        <div class="subtitle">外部模式会保存 external-ip-sync-task，并自动写入 target_type=${EXTERNAL_IP_SYNC_KIND}。</div>
+      </div>
+    </div>
+    <div class="row" id="job-form-target-row">
       <div class="field"><label>执行目标</label>
         <select id="job-form-target">${buildScheduleTargetOptions(job.target_type || (job.draft_id ? 'task_draft' : ''), job.target_id || job.draft_id || '')}</select>
       </div>
     </div>
     <div class="row">
-      <div class="field"><label>任务定时窗口</label>
+      <div class="field" id="job-form-time-mode-row"><label>任务定时窗口</label>
         <select id="job-form-time-mode">
           <option value="daily" ${uiState.mode === 'daily' ? 'selected' : ''}>每日定时</option>
           <option value="interval" ${uiState.mode === 'interval' ? 'selected' : ''}>固定间隔</option>
@@ -2749,6 +3327,9 @@ function renderAdvancedEditorForm(job) {
     </div>
     <div class="row" id="job-form-interval-row">
       <div class="field"><label>间隔</label><select id="job-form-interval-preset">${buildIntervalPresetOptions(uiState.intervalPreset || '1h')}</select></div>
+    </div>
+    <div id="job-form-external-host" class="hidden">
+      ${renderExternalIPSyncFields('job-form', externalTask)}
     </div>
     <div class="row">
       <div class="field"><label>start_at</label><input id="job-form-start-at" value="${escapeHtml(job.start_at || '')}" placeholder="2026-06-04T09:00:00+08:00" /></div>
@@ -2770,8 +3351,19 @@ function renderAdvancedEditorForm(job) {
     syncWebhookReferenceEnabledState('#job-form-webhook-config-id', '#job-form-webhook-enabled', { autoEnable: true });
     renderWebhookReferenceHint('#job-form-webhook-config-id', '#job-form-webhook-auto-hint');
   });
+  qs('#job-form-kind')?.addEventListener('change', () => toggleAdvancedJobEditorScheduleFields());
+  qs('#job-form-external-resource-select')?.addEventListener('change', () => syncExternalIPSyncResourceSelection('job-form'));
+  qs('#job-form-external-resource-id')?.addEventListener('input', () => syncExternalIPSyncResourceInput('job-form'));
   toggleAdvancedJobEditorScheduleFields();
   qs('#job-form-time-mode')?.addEventListener('change', () => toggleAdvancedJobEditorScheduleFields());
+  renderExternalIPSyncResourceHint('job-form');
+  if (kind === EXTERNAL_IP_SYNC_KIND && !getExternalIPSyncTaskByID(job.target_id || '') && job.target_id) {
+    ensureExternalIPSyncTaskLoaded(job.target_id).then((loaded) => {
+      if (!loaded) return;
+      if (window.__jobEditorMode !== 'form') return;
+      renderAdvancedEditorForm(window.__jobEditorCurrent || job);
+    });
+  }
 }
 
 async function saveAdvancedJobEditor() {
@@ -2780,29 +3372,10 @@ async function saveAdvancedJobEditor() {
     if (window.__jobEditorMode === 'json') {
       payload = JSON.parse(qs('#job-editor-json').value || '{}');
     } else {
-      payload = cloneValue(window.__jobEditorCurrent || {});
-      payload.id = qs('#job-form-id').value.trim();
-      {
-        const targetValue = qs('#job-form-target').value.trim().split(':');
-        payload.target_type = targetValue[0] || 'task_draft';
-        payload.target_id = targetValue[1] || '';
-        payload.draft_id = payload.target_type === 'task_draft' ? payload.target_id : '';
-      }
-      payload.enabled = qs('#job-form-enabled').value === 'true';
-      payload.start_at = qs('#job-form-start-at').value.trim();
-      payload.end_at = qs('#job-form-end-at').value.trim();
-      Object.assign(payload, buildSchedulePayloadFromUI(payload, {
-        mode: '#job-form-time-mode',
-        hour: '#job-form-daily-hour',
-        minute: '#job-form-daily-minute',
-        interval: '#job-form-interval-preset',
+      ({ payload } = await persistJobFromEditor('job-form', window.__jobEditorCurrent || {}, {
+        isCreate: window.__jobEditorIsCreate,
+        originalID: window.__jobEditorOriginalName
       }));
-      Object.assign(payload, getWebhookReferencePayload('#job-form-webhook-config-id', '#job-form-webhook-enabled'));
-    }
-    if (window.__jobEditorIsCreate) {
-      await fetchJSON('/api/v1/job-schedules', { method: 'POST', body: JSON.stringify(payload) });
-    } else {
-      await fetchJSON(`/api/v1/job-schedules/${encodeURIComponent(window.__jobEditorOriginalName || payload.id)}`, { method: 'PUT', body: JSON.stringify(payload) });
     }
     toast('保存成功', payload.id || '调度已保存', 'ok');
     setView('tasks');
@@ -2810,6 +3383,10 @@ async function saveAdvancedJobEditor() {
     await refreshJobs(true);
     if (payload.id) loadJobDetail(payload.id);
   } catch (e) {
+    if (e && e.externalTaskSaved && e.externalTask) {
+      toast('调度保存失败', `external-ip-sync-task ${e.externalTask.id} 已保存，但调度保存失败：${String(e)}`, '');
+      return;
+    }
     toast('保存失败', String(e), '');
   }
 }
@@ -2832,6 +3409,9 @@ function buildScheduleTargetOptions(selectedType, selectedID) {
     const selected = selectedType === 'complex_task' && (t.id || '') === selectedID ? 'selected' : '';
     parts.push(`<option value="${escapeHtml(value)}" ${selected}>运营agent · ${escapeHtml(t.id || '')}${t.name ? ` · ${escapeHtml(t.name)}` : ''}</option>`);
   });
+  if (!parts.length) {
+    parts.push('<option value="">暂无可绑定目标，请切换为外部 IP 同步或先创建任务</option>');
+  }
   return parts.join('');
 }
 
@@ -3189,6 +3769,8 @@ async function refreshComplexTasks(quiet) {
     toast('运营agent', String(e), '');
   }
 }
+
+refreshExternalIPSyncTaskCache(true);
 
 async function refreshOutputTemplates(quiet) {
   try {

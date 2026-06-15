@@ -11,4 +11,3 @@ func TestSchedulerAcceptsSecondsSpec(t *testing.T) {
 		t.Fatalf("expected seconds spec accepted, got err=%v", err)
 	}
 }
-

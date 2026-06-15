@@ -18,12 +18,12 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model        string
-	SystemPrompt string
-	Prompt       string
-	Input        interface{}
-	Temperature  *float64
-	MaxTokens    *int
+	Model           string
+	SystemPrompt    string
+	Prompt          string
+	Input           interface{}
+	Temperature     *float64
+	MaxTokens       *int
 	Thinking        *bool
 	ReasoningEffort string
 	ResponseFormat  map[string]interface{}

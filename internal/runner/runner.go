@@ -2,18 +2,27 @@ package runner
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"sealsuite-operation/internal/api"
 	"sealsuite-operation/internal/config"
+	appdb "sealsuite-operation/internal/db"
 	"sealsuite-operation/internal/llm"
 	"sealsuite-operation/internal/logger"
+	"sealsuite-operation/internal/repository"
+	sqliteRepo "sealsuite-operation/internal/repository/sqlite"
 	"sealsuite-operation/internal/scheduler"
 	"sealsuite-operation/internal/sealsuite"
+	"sealsuite-operation/internal/service"
 	"sealsuite-operation/internal/storage"
 	"sealsuite-operation/internal/webhook"
 
@@ -48,18 +57,38 @@ type ComplexTaskRunResult struct {
 	FinalOutput interface{}             `json:"final_output,omitempty"`
 }
 
+type googlePrefix struct {
+	IPv4Prefix string `json:"ipv4Prefix"`
+	IPv6Prefix string `json:"ipv6Prefix"`
+}
+
+type googleIPRanges struct {
+	Prefixes []googlePrefix `json:"prefixes"`
+}
+
 type Runner struct {
 	cfg *config.Config
 
-	jobsStore       storage.JobsStore
-	tplStore        storage.TemplatesStore
-	taskDraftsStore storage.TaskDraftsStore
-	schedulesStore  storage.JobSchedulesStore
-	runStore        storage.JobRunsStore
-	webhookStore    *storage.WebhookStore
+	appDB *sql.DB
+
+	legacyJobRepo   repository.LegacyJobRepository
+	taskDraftRepo   *sqliteRepo.TaskDraftRepository
+	scheduleRepo    *sqliteRepo.ScheduleRepository
+	templateRepo    *sqliteRepo.TemplateRepository
+	webhookRepo     *sqliteRepo.WebhookRepository
+	llmAPIRepo      *sqliteRepo.LLMAPIRepository
+	complexTaskRepo *sqliteRepo.ComplexTaskRepository
+	externalIPSyncRepo repository.ExternalIPSyncTaskRepository
+	runLogsRepo     *sqliteRepo.JobRunsRepository
+	executionSvc    *service.ExecutionService
 
 	client   *sealsuite.Client
 	executor *api.Executor
+
+	executeExternalIPSync     func(id string) (*service.ExternalIPSyncExecutionSummary, error)
+	fetchGoogleCIDRs         func(task storage.ExternalIPSyncTask) ([]string, error)
+	loadFeilianResourceCIDRs func(resourceID string) ([]string, error)
+	writeFeilianCIDRs        func(task storage.ExternalIPSyncTask, cidrs []string) error
 
 	sched         *scheduler.Scheduler
 	jobsFile      *storage.JobsFile
@@ -71,21 +100,22 @@ type Runner struct {
 	scheduleStatus map[string]*JobStatus
 }
 
-func New(cfg *config.Config, client *sealsuite.Client, jobsPath, templatesPath string) *Runner {
-	return &Runner{
-		cfg:             cfg,
-		jobsStore:       storage.JobsStore{Path: jobsPath},
-		tplStore:        storage.TemplatesStore{Path: templatesPath},
-		taskDraftsStore: storage.TaskDraftsStore{Path: "task-drafts.yaml"},
-		schedulesStore:  storage.JobSchedulesStore{Path: "job-schedules.yaml"},
-		runStore:        storage.JobRunsStore{Path: "job-runs.json"},
-		webhookStore:    storage.NewWebhookStore("webhooks.yaml"),
-		client:          client,
-		executor:        api.NewExecutor(client, nil),
-		status:          map[string]*JobStatus{},
-		scheduleStatus:  map[string]*JobStatus{},
-		taskDrafts:      map[string]storage.TaskDraft{},
+func New(cfg *config.Config, client *sealsuite.Client) *Runner {
+	r := &Runner{
+		cfg:            cfg,
+		client:         client,
+		executor:       api.NewExecutor(client, nil),
+		status:         map[string]*JobStatus{},
+		scheduleStatus: map[string]*JobStatus{},
+		taskDrafts:     map[string]storage.TaskDraft{},
+		executionSvc:   service.NewExecutionService(nil),
 	}
+	r.fetchGoogleCIDRs = r.defaultFetchGoogleCIDRs
+	r.loadFeilianResourceCIDRs = r.defaultLoadFeilianResourceCIDRs
+	r.writeFeilianCIDRs = r.defaultWriteFeilianCIDRs
+	r.executeExternalIPSync = r.runExternalIPSyncTask
+	r.initSQLiteRuntime()
+	return r
 }
 
 func (r *Runner) Executor() *api.Executor { return r.executor }
@@ -94,13 +124,81 @@ func (r *Runner) Config() *config.Config { return r.cfg }
 
 const scheduleRunKeyPrefix = "schedule:"
 
+func (r *Runner) loadTemplates() (*storage.TemplatesFile, error) {
+	if r.templateRepo == nil {
+		return nil, fmt.Errorf("template repository is nil")
+	}
+	return r.templateRepo.Load()
+}
+
+func (r *Runner) loadLegacyJobsFile() (*storage.JobsFile, error) {
+	if r.legacyJobRepo == nil {
+		return nil, fmt.Errorf("legacy job repository is nil")
+	}
+	return r.legacyJobRepo.Load()
+}
+
+func (r *Runner) initSQLiteRuntime() {
+	if r == nil || r.cfg == nil {
+		return
+	}
+
+	dbPath := strings.TrimSpace(r.cfg.Database.Path)
+	if dbPath == "" {
+		dbPath = "./data/app.db"
+	}
+
+	appDB, err := appdb.OpenSQLite(dbPath)
+	if err != nil {
+		logger.Warn("failed to open sqlite runtime database", zap.String("path", dbPath), zap.Error(err))
+		return
+	}
+	if err := appdb.Migrate(appDB); err != nil {
+		logger.Warn("failed to migrate sqlite runtime database", zap.String("path", dbPath), zap.Error(err))
+		_ = appDB.Close()
+		return
+	}
+	if err := appdb.BootstrapLegacyJobsFromYAML(appDB, "jobs.yaml"); err != nil {
+		logger.Warn("failed to bootstrap legacy jobs from jobs.yaml", zap.String("path", "jobs.yaml"), zap.Error(err))
+	}
+
+	r.appDB = appDB
+	r.legacyJobRepo = sqliteRepo.NewLegacyJobRepository(appDB)
+	r.taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
+	r.scheduleRepo = sqliteRepo.NewScheduleRepository(appDB)
+	r.templateRepo = sqliteRepo.NewTemplateRepository(appDB)
+	r.webhookRepo = sqliteRepo.NewWebhookRepository(appDB)
+	r.llmAPIRepo = sqliteRepo.NewLLMAPIRepository(appDB)
+	r.complexTaskRepo = sqliteRepo.NewComplexTaskRepository(appDB)
+	r.externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
+	r.runLogsRepo = sqliteRepo.NewJobRunsRepository(appDB)
+	r.executionSvc = service.NewExecutionService(r.runLogsRepo)
+	r.executeExternalIPSync = r.runExternalIPSyncTask
+}
+
 // HotReloadConfig 用于 Web 控制台保存连接信息后在线生效：
 // - 更新 cfg（影响 scheduler 时区/启用开关等）
 // - 更新 client（影响飞连 API 调用）
 // - executor 同步切换 client
 func (r *Runner) HotReloadConfig(cfg *config.Config, client *sealsuite.Client) {
 	if cfg != nil {
+		if r.appDB != nil {
+			_ = r.appDB.Close()
+			r.appDB = nil
+		}
+		r.legacyJobRepo = nil
+		r.taskDraftRepo = nil
+		r.scheduleRepo = nil
+		r.templateRepo = nil
+		r.webhookRepo = nil
+		r.llmAPIRepo = nil
+		r.complexTaskRepo = nil
+		r.externalIPSyncRepo = nil
+		r.runLogsRepo = nil
+		r.executionSvc = service.NewExecutionService(nil)
+		r.executeExternalIPSync = r.runExternalIPSyncTask
 		r.cfg = cfg
+		r.initSQLiteRuntime()
 	}
 	if client != nil {
 		r.client = client
@@ -109,11 +207,11 @@ func (r *Runner) HotReloadConfig(cfg *config.Config, client *sealsuite.Client) {
 }
 
 func (r *Runner) LoadSnapshot() (*storage.JobsFile, map[string]storage.Template, map[string]*JobStatus, error) {
-	jf, err := r.jobsStore.Load()
+	jf, err := r.loadLegacyJobsFile()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	tf, err := r.tplStore.Load()
+	tf, err := r.loadTemplates()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -128,10 +226,10 @@ func (r *Runner) LoadSnapshot() (*storage.JobsFile, map[string]storage.Template,
 		smap[k] = &cp
 	}
 
-	rf, err := r.runStore.Load()
+	latestRuns, err := r.latestRunLogStatus()
 	if err == nil {
-		for name, rec := range rf.Items {
-			if len(name) > len(scheduleRunKeyPrefix) && name[:len(scheduleRunKeyPrefix)] == scheduleRunKeyPrefix {
+		for name, rec := range latestRuns {
+			if strings.HasPrefix(name, scheduleRunKeyPrefix) {
 				continue
 			}
 			st := smap[name]
@@ -139,31 +237,50 @@ func (r *Runner) LoadSnapshot() (*storage.JobsFile, map[string]storage.Template,
 				st = &JobStatus{}
 				smap[name] = st
 			}
-			if rec.LastRun != "" {
-				if ts, e := time.Parse(time.RFC3339, rec.LastRun); e == nil {
-					st.LastRun = ts
-				}
-			}
-			st.LastOK = rec.OK
-			st.DurationMs = rec.DurationMs
-			st.LastError = rec.Error
+			applyJobStatusRecord(st, rec)
 		}
 	}
 	return jf, tmap, smap, nil
 }
 
+func (r *Runner) loadTaskDraftsFile() (*storage.TaskDraftsFile, error) {
+	if r.taskDraftRepo == nil {
+		return nil, fmt.Errorf("task draft repository is nil")
+	}
+	items, err := r.taskDraftRepo.List()
+	if err != nil {
+		return nil, err
+	}
+	tf := &storage.TaskDraftsFile{Version: 1, Items: items}
+	storage.EnsureTaskDraftsFileDefaults(tf)
+	return tf, nil
+}
+
+func (r *Runner) loadSchedulesFile() (*storage.JobSchedulesFile, error) {
+	if r.scheduleRepo == nil {
+		return nil, fmt.Errorf("schedule repository is nil")
+	}
+	items, err := r.scheduleRepo.List()
+	if err != nil {
+		return nil, err
+	}
+	sf := &storage.JobSchedulesFile{Version: 1, Items: items}
+	storage.EnsureJobSchedulesFileDefaults(sf)
+	return sf, nil
+}
+
 func (r *Runner) LoadScheduleSnapshot() (*storage.JobSchedulesFile, map[string]storage.TaskDraft, map[string]*JobStatus, error) {
-	sf, err := r.schedulesStore.Load()
+	sf, err := r.loadSchedulesFile()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	tf, err := r.taskDraftsStore.Load()
+	tf, err := r.loadTaskDraftsFile()
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	dmap := map[string]storage.TaskDraft{}
 	for _, d := range tf.Items {
-		dmap[d.ID] = d
+		dmap[d.ID] = storage.NormalizeTaskDraft(d)
 	}
 	smap := map[string]*JobStatus{}
 	for k, v := range r.scheduleStatus {
@@ -171,37 +288,30 @@ func (r *Runner) LoadScheduleSnapshot() (*storage.JobSchedulesFile, map[string]s
 		smap[k] = &cp
 	}
 
-	rf, err := r.runStore.Load()
+	latestRuns, err := r.latestRunLogStatus()
 	if err == nil {
-		for key, rec := range rf.Items {
-			if len(key) <= len(scheduleRunKeyPrefix) || key[:len(scheduleRunKeyPrefix)] != scheduleRunKeyPrefix {
+		for key, rec := range latestRuns {
+			if !strings.HasPrefix(key, scheduleRunKeyPrefix) {
 				continue
 			}
-			id := key[len(scheduleRunKeyPrefix):]
+			id := strings.TrimPrefix(key, scheduleRunKeyPrefix)
 			st := smap[id]
 			if st == nil {
 				st = &JobStatus{}
 				smap[id] = st
 			}
-			if rec.LastRun != "" {
-				if ts, e := time.Parse(time.RFC3339, rec.LastRun); e == nil {
-					st.LastRun = ts
-				}
-			}
-			st.LastOK = rec.OK
-			st.DurationMs = rec.DurationMs
-			st.LastError = rec.Error
+			applyJobStatusRecord(st, rec)
 		}
 	}
 	return sf, dmap, smap, nil
 }
 
 func (r *Runner) Reload() error {
-	jf, err := r.jobsStore.Load()
+	jf, err := r.loadLegacyJobsFile()
 	if err != nil {
 		return err
 	}
-	tf, err := r.tplStore.Load()
+	tf, err := r.loadTemplates()
 	if err != nil {
 		return err
 	}
@@ -210,17 +320,17 @@ func (r *Runner) Reload() error {
 	for _, t := range tf.Templates {
 		tmap[t.ID] = t
 	}
-	df, err := r.taskDraftsStore.Load()
+	df, err := r.loadTaskDraftsFile()
 	if err != nil {
 		return err
 	}
-	sf, err := r.schedulesStore.Load()
+	sf, err := r.loadSchedulesFile()
 	if err != nil {
 		return err
 	}
 	dmap := map[string]storage.TaskDraft{}
 	for _, d := range df.Items {
-		dmap[d.ID] = d
+		dmap[d.ID] = storage.NormalizeTaskDraft(d)
 	}
 	r.templates = tmap
 	r.taskDrafts = dmap
@@ -289,6 +399,10 @@ func (r *Runner) Stop() {
 	if r.sched != nil {
 		r.sched.Stop()
 	}
+	if r.appDB != nil {
+		_ = r.appDB.Close()
+		r.appDB = nil
+	}
 }
 
 func (r *Runner) RunOnce(name string) error {
@@ -305,19 +419,34 @@ func (r *Runner) RunOnce(name string) error {
 	return fmt.Errorf("job not found: %s", name)
 }
 
+func (r *Runner) RunTaskDraft(id string) (interface{}, error) {
+	result, _, err := r.runTaskDraftByID(id, true, "manual")
+	return result, err
+}
+
+func (r *Runner) RunSchedule(id string) (interface{}, error) {
+	s, err := r.loadSchedule(id)
+	if err != nil {
+		return nil, err
+	}
+	result, _, err := r.runScheduleTarget(context.Background(), s, "manual")
+	return result, err
+}
+
 func (r *Runner) RunScheduleOnce(ctx context.Context, id string) (webhook.DeliveryResult, error) {
-	s, ok, err := r.schedulesStore.Get(id)
+	s, err := r.loadSchedule(id)
 	if err != nil {
 		return webhook.DeliveryResult{Attempted: false}, err
 	}
-	if !ok {
-		return webhook.DeliveryResult{Attempted: false}, fmt.Errorf("job schedule not found: %s", id)
-	}
-	_, delivery, err := r.executeSchedule(ctx, *s)
+	_, delivery, err := r.runScheduleTarget(ctx, s, "manual")
 	return delivery, err
 }
 
 func (r *Runner) RunComplexTask(task storage.ComplexTask) (*ComplexTaskRunResult, error) {
+	return r.runComplexTask(task, "manual")
+}
+
+func (r *Runner) runComplexTask(task storage.ComplexTask, triggerSource string) (*ComplexTaskRunResult, error) {
 	startedAt := time.Now()
 	result := &ComplexTaskRunResult{
 		TaskID:    task.ID,
@@ -340,7 +469,9 @@ func (r *Runner) RunComplexTask(task storage.ComplexTask) (*ComplexTaskRunResult
 			result.Steps = append(result.Steps, item)
 			result.OK = false
 			result.FinalOutput = current
-			result.FinishedAt = time.Now().Format(time.RFC3339)
+			finishedAt := time.Now()
+			result.FinishedAt = finishedAt.Format(time.RFC3339)
+			r.recordComplexTaskRun(task, triggerSource, startedAt, finishedAt, result, err)
 			return result, err
 		}
 		item.OK = true
@@ -351,21 +482,24 @@ func (r *Runner) RunComplexTask(task storage.ComplexTask) (*ComplexTaskRunResult
 
 	result.OK = true
 	result.FinalOutput = current
-	result.FinishedAt = time.Now().Format(time.RFC3339)
+	finishedAt := time.Now()
+	result.FinishedAt = finishedAt.Format(time.RFC3339)
+	r.recordComplexTaskRun(task, triggerSource, startedAt, finishedAt, result, nil)
 	return result, nil
 }
 
 func (r *Runner) runJob(j storage.Job) error {
 	start := time.Now()
 	err := r.executeJob(j)
-	dur := time.Since(start).Milliseconds()
+	finishedAt := time.Now()
+	dur := finishedAt.Sub(start).Milliseconds()
 
 	st := r.status[j.Name]
 	if st == nil {
 		st = &JobStatus{}
 		r.status[j.Name] = st
 	}
-	st.LastRun = time.Now()
+	st.LastRun = finishedAt
 	st.DurationMs = dur
 	st.LastOK = err == nil
 	if err != nil {
@@ -373,37 +507,13 @@ func (r *Runner) runJob(j storage.Job) error {
 	} else {
 		st.LastError = ""
 	}
-	_ = r.runStore.Put(j.Name, storage.JobRunRecord{
-		LastRun:    st.LastRun.Format(time.RFC3339),
-		OK:         st.LastOK,
-		DurationMs: st.DurationMs,
-		Error:      st.LastError,
-	})
+	r.recordLegacyJobRun(j, "scheduler", start, finishedAt, err)
 	r.refreshNextRunFor(j.Name)
 	return err
 }
 
 func (r *Runner) runSchedule(s storage.JobSchedule) error {
-	start := time.Now()
-	_, _, err := r.executeSchedule(context.Background(), s)
-	dur := time.Since(start).Milliseconds()
-
-	st := r.ensureStatus(r.scheduleStatus, s.ID)
-	st.LastRun = time.Now()
-	st.DurationMs = dur
-	st.LastOK = err == nil
-	if err != nil {
-		st.LastError = err.Error()
-	} else {
-		st.LastError = ""
-	}
-	_ = r.runStore.Put(scheduleRunKeyPrefix+s.ID, storage.JobRunRecord{
-		LastRun:    st.LastRun.Format(time.RFC3339),
-		OK:         st.LastOK,
-		DurationMs: st.DurationMs,
-		Error:      st.LastError,
-	})
-	r.refreshNextRunForSchedule(s.ID)
+	_, _, err := r.runScheduleTarget(context.Background(), s, "scheduler")
 	return err
 }
 
@@ -459,13 +569,33 @@ func (r *Runner) executeSchedule(ctx context.Context, s storage.JobSchedule) (in
 	targetType, targetID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
 	result, err := r.executeTargetOutputForSchedule(targetType, targetID)
 	if err != nil {
-		return nil, webhook.DeliveryResult{Attempted: false}, err
+		return result, webhook.DeliveryResult{Attempted: false}, err
 	}
 	return result, r.deliverScheduleWebhook(ctx, s, targetType, targetID, result), nil
 }
 
+func (r *Runner) runScheduleTarget(ctx context.Context, s storage.JobSchedule, triggerSource string) (interface{}, webhook.DeliveryResult, error) {
+	startedAt := time.Now()
+	result, delivery, err := r.executeSchedule(ctx, s)
+	finishedAt := time.Now()
+
+	st := r.ensureStatus(r.scheduleStatus, s.ID)
+	st.LastRun = finishedAt
+	st.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
+	st.LastOK = err == nil
+	if err != nil {
+		st.LastError = err.Error()
+	} else {
+		st.LastError = ""
+	}
+	targetType, targetID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+	r.recordScheduleRun(s, targetType, targetID, triggerSource, startedAt, finishedAt, result, err)
+	r.refreshNextRunForSchedule(s.ID)
+	return result, delivery, err
+}
+
 func (r *Runner) executeTaskDraft(d storage.TaskDraft) error {
-	_, _, err := r.runTaskDraft(d)
+	_, _, err := r.runTrackedTaskDraft(d, true, "internal")
 	return err
 }
 
@@ -474,7 +604,22 @@ func (r *Runner) runTaskDraft(d storage.TaskDraft) (interface{}, webhook.Deliver
 }
 
 func (r *Runner) ExecuteTransientTaskDraft(d storage.TaskDraft, enableWebhook bool) (interface{}, webhook.DeliveryResult, error) {
-	return r.runTaskDraftWithDelivery(d, enableWebhook)
+	return r.runTrackedTaskDraft(d, enableWebhook, "manual")
+}
+
+func (r *Runner) runTaskDraftByID(id string, enableWebhook bool, triggerSource string) (interface{}, webhook.DeliveryResult, error) {
+	draft, err := r.loadTaskDraft(id)
+	if err != nil {
+		return nil, webhook.DeliveryResult{Attempted: false}, err
+	}
+	return r.runTrackedTaskDraft(draft, enableWebhook, triggerSource)
+}
+
+func (r *Runner) runTrackedTaskDraft(d storage.TaskDraft, enableWebhook bool, triggerSource string) (interface{}, webhook.DeliveryResult, error) {
+	startedAt := time.Now()
+	result, delivery, err := r.runTaskDraftWithDelivery(d, enableWebhook)
+	r.recordTaskDraftRun(d, triggerSource, startedAt, time.Now(), result, err)
+	return result, delivery, err
 }
 
 func normalizeTaskDraftExecutionMode(d storage.TaskDraft) string {
@@ -515,6 +660,7 @@ func normalizeTaskDraftExecutionMode(d storage.TaskDraft) string {
 }
 
 func (r *Runner) runTaskDraftWithDelivery(d storage.TaskDraft, enableWebhook bool) (interface{}, webhook.DeliveryResult, error) {
+	d = storage.NormalizeTaskDraft(d)
 	input := d.InputConfig
 	if input == nil {
 		input = map[string]interface{}{}
@@ -579,18 +725,253 @@ func (r *Runner) taskDraftDeliveryResult(d storage.TaskDraft, result interface{}
 	return r.deliverTaskDraftWebhook(d, result)
 }
 
+func (r *Runner) loadSchedule(id string) (storage.JobSchedule, error) {
+	if r.scheduleRepo == nil {
+		return storage.JobSchedule{}, fmt.Errorf("schedule repository is nil")
+	}
+	got, found, err := r.scheduleRepo.Get(id)
+	if err != nil {
+		return storage.JobSchedule{}, err
+	}
+	if !found {
+		return storage.JobSchedule{}, fmt.Errorf("job schedule not found: %s", id)
+	}
+	return storage.NormalizeJobSchedule(got), nil
+}
+
 func (r *Runner) loadTaskDraft(id string) (storage.TaskDraft, error) {
 	if draft, ok := r.taskDrafts[id]; ok {
-		return draft, nil
+		return storage.NormalizeTaskDraft(draft), nil
 	}
-	got, found, err := r.taskDraftsStore.Get(id)
+	if r.taskDraftRepo == nil {
+		return storage.TaskDraft{}, fmt.Errorf("task draft repository is nil")
+	}
+	got, found, err := r.taskDraftRepo.Get(id)
 	if err != nil {
 		return storage.TaskDraft{}, err
 	}
 	if !found {
 		return storage.TaskDraft{}, fmt.Errorf("task draft not found: %s", id)
 	}
-	return *got, nil
+	return storage.NormalizeTaskDraft(got), nil
+}
+
+func (r *Runner) loadComplexTask(id string) (storage.ComplexTask, error) {
+	if r.complexTaskRepo == nil {
+		return storage.ComplexTask{}, fmt.Errorf("complex task repository is nil")
+	}
+	got, found, err := r.complexTaskRepo.Get(id)
+	if err != nil {
+		return storage.ComplexTask{}, err
+	}
+	if !found {
+		return storage.ComplexTask{}, fmt.Errorf("complex task not found: %s", id)
+	}
+	return got, nil
+}
+
+func (r *Runner) loadExternalIPSyncTask(id string) (storage.ExternalIPSyncTask, error) {
+	if r.externalIPSyncRepo == nil {
+		return storage.ExternalIPSyncTask{}, fmt.Errorf("external ip sync repository is nil")
+	}
+	got, found, err := r.externalIPSyncRepo.Get(id)
+	if err != nil {
+		return storage.ExternalIPSyncTask{}, err
+	}
+	if !found {
+		return storage.ExternalIPSyncTask{}, fmt.Errorf("external ip sync task not found: %s", id)
+	}
+	return storage.NormalizeExternalIPSyncTask(got), nil
+}
+
+func (r *Runner) runExternalIPSyncTask(id string) (*service.ExternalIPSyncExecutionSummary, error) {
+	task, err := r.loadExternalIPSyncTask(id)
+	if err != nil {
+		return nil, err
+	}
+	return r.runExternalIPSyncTaskWithTask(task)
+}
+
+func (r *Runner) runExternalIPSyncTaskWithTask(task storage.ExternalIPSyncTask) (*service.ExternalIPSyncExecutionSummary, error) {
+	task = storage.NormalizeExternalIPSyncTask(task)
+	r.ensureExternalIPSyncDeps()
+
+	summary := &service.ExternalIPSyncExecutionSummary{
+		TaskID:       task.ID,
+		ResourceID:   task.ResourceID,
+		IPVersion:    task.IPVersion,
+		WriteAPIPath: task.FeilianAPIPath,
+		DryRun:       task.DryRun,
+		Status:       "success",
+	}
+
+	sourceCIDRs, err := r.fetchGoogleCIDRs(task)
+	if err != nil {
+		summary.Status = "failed"
+		summary.ErrorMessage = err.Error()
+		return summary, err
+	}
+	summary.SourceTotal = len(sourceCIDRs)
+	summary.FilteredTotal = len(sourceCIDRs)
+
+	existingCIDRs, err := r.loadFeilianResourceCIDRs(task.ResourceID)
+	if err != nil {
+		summary.Status = "failed"
+		summary.ErrorMessage = err.Error()
+		return summary, err
+	}
+	summary.ExistingTotal = len(existingCIDRs)
+
+	toAdd := diffCIDRs(sourceCIDRs, existingCIDRs)
+	summary.ToAddTotal = len(toAdd)
+
+	if len(toAdd) == 0 && task.SkipWhenEmpty {
+		summary.Status = "skipped"
+		return summary, nil
+	}
+	if task.DryRun {
+		summary.Status = "dry_run"
+		return summary, nil
+	}
+	if err := r.writeFeilianCIDRs(task, toAdd); err != nil {
+		summary.Status = "failed"
+		summary.ErrorMessage = err.Error()
+		return summary, err
+	}
+	summary.AddedTotal = len(toAdd)
+	return summary, nil
+}
+
+func (r *Runner) ensureExternalIPSyncDeps() {
+	if r.fetchGoogleCIDRs == nil {
+		r.fetchGoogleCIDRs = r.defaultFetchGoogleCIDRs
+	}
+	if r.loadFeilianResourceCIDRs == nil {
+		r.loadFeilianResourceCIDRs = r.defaultLoadFeilianResourceCIDRs
+	}
+	if r.writeFeilianCIDRs == nil {
+		r.writeFeilianCIDRs = r.defaultWriteFeilianCIDRs
+	}
+}
+
+func (r *Runner) defaultFetchGoogleCIDRs(task storage.ExternalIPSyncTask) ([]string, error) {
+	task = storage.NormalizeExternalIPSyncTask(task)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Get(task.SourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch google cidrs: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetch google cidrs: unexpected status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read google cidrs response: %w", err)
+	}
+
+	var payload googleIPRanges
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode google cidrs response: %w", err)
+	}
+	return filterGoogleCIDRs(payload, task.IPVersion), nil
+}
+
+func (r *Runner) defaultLoadFeilianResourceCIDRs(resourceID string) ([]string, error) {
+	resourceID = strings.TrimSpace(resourceID)
+	if resourceID == "" {
+		return nil, fmt.Errorf("load feilian resource cidrs: resource_id is required")
+	}
+	if r.client == nil {
+		return nil, fmt.Errorf("load feilian resource cidrs: sealsuite client is nil")
+	}
+
+	_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/addr/management/detail", map[string]string{
+		"resource_id": resourceID,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("load feilian resource cidrs: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode feilian resource cidrs response: %w", err)
+	}
+	return extractCIDRsFromPayload(payload), nil
+}
+
+func (r *Runner) defaultWriteFeilianCIDRs(task storage.ExternalIPSyncTask, cidrs []string) error {
+	task = storage.NormalizeExternalIPSyncTask(task)
+	if task.ResourceID == "" {
+		return fmt.Errorf("write feilian cidrs: resource_id is required")
+	}
+	if r.client == nil {
+		return fmt.Errorf("write feilian cidrs: sealsuite client is nil")
+	}
+	if len(cidrs) == 0 {
+		return nil
+	}
+
+	resp, err := r.client.Post(task.FeilianAPIPath, map[string]interface{}{
+		"resource_id": task.ResourceID,
+		"cidrs":       cidrs,
+	})
+	if err != nil {
+		return fmt.Errorf("write feilian cidrs: %w", err)
+	}
+	if resp == nil {
+		return fmt.Errorf("write feilian cidrs: empty response")
+	}
+	return nil
+}
+
+func filterGoogleCIDRs(in googleIPRanges, version string) []string {
+	version = strings.ToLower(strings.TrimSpace(version))
+	set := make(map[string]struct{}, len(in.Prefixes))
+	for _, prefix := range in.Prefixes {
+		if (version == "ipv4" || version == "all") && strings.TrimSpace(prefix.IPv4Prefix) != "" {
+			set[strings.TrimSpace(prefix.IPv4Prefix)] = struct{}{}
+		}
+		if (version == "ipv6" || version == "all") && strings.TrimSpace(prefix.IPv6Prefix) != "" {
+			set[strings.TrimSpace(prefix.IPv6Prefix)] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for cidr := range set {
+		out = append(out, cidr)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func diffCIDRs(source, existing []string) []string {
+	exists := make(map[string]struct{}, len(existing))
+	for _, cidr := range existing {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		exists[cidr] = struct{}{}
+	}
+
+	out := make([]string, 0, len(source))
+	added := make(map[string]struct{}, len(source))
+	for _, cidr := range source {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := exists[cidr]; ok {
+			continue
+		}
+		if _, ok := added[cidr]; ok {
+			continue
+		}
+		out = append(out, cidr)
+		added[cidr] = struct{}{}
+	}
+	return out
 }
 
 func (r *Runner) deliverTaskDraftWebhook(d storage.TaskDraft, result interface{}) webhook.DeliveryResult {
@@ -598,10 +979,10 @@ func (r *Runner) deliverTaskDraftWebhook(d storage.TaskDraft, result interface{}
 	delivery := webhook.DeliveryResult{Attempted: false}
 	switch {
 	case !d.WebhookEnabled || webhookID == "":
-	case r.webhookStore == nil:
-		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook store is nil"}
+	case r.webhookRepo == nil:
+		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook repository is nil"}
 	default:
-		item, ok, err := r.webhookStore.Get(webhookID)
+		item, ok, err := r.loadWebhookItem(webhookID)
 		switch {
 		case err != nil:
 			delivery = webhook.DeliveryResult{Attempted: false, Error: err.Error()}
@@ -630,10 +1011,10 @@ func (r *Runner) deliverScheduleWebhook(ctx context.Context, s storage.JobSchedu
 	delivery := webhook.DeliveryResult{Attempted: false}
 	switch {
 	case !s.WebhookEnabled || webhookID == "":
-	case r.webhookStore == nil:
-		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook store is nil"}
+	case r.webhookRepo == nil:
+		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook repository is nil"}
 	default:
-		item, ok, err := r.webhookStore.Get(webhookID)
+		item, ok, err := r.loadWebhookItem(webhookID)
 		switch {
 		case err != nil:
 			delivery = webhook.DeliveryResult{Attempted: false, Error: err.Error()}
@@ -668,6 +1049,116 @@ func (r *Runner) logWebhookDelivery(sourceType, sourceID string, delivery webhoo
 		zap.Int("status_code", delivery.StatusCode),
 		zap.String("error", delivery.Error),
 	)
+}
+
+func (r *Runner) recordLegacyJobRun(j storage.Job, triggerSource string, startedAt, finishedAt time.Time, runErr error) {
+	if r.executionSvc == nil {
+		return
+	}
+	if err := r.executionSvc.RecordRun(service.RunLog{
+		SourceType:    "job",
+		SourceID:      j.Name,
+		TargetType:    "legacy_job",
+		TargetID:      j.Name,
+		Status:        statusFromRunError(runErr),
+		TriggerSource: firstNonEmpty(triggerSource, "scheduler"),
+		StartedAt:     startedAt.Format(time.RFC3339),
+		FinishedAt:    finishedAt.Format(time.RFC3339),
+		DurationMS:    finishedAt.Sub(startedAt).Milliseconds(),
+		ErrorMessage:  errorString(runErr),
+		ResultJSON:    "null",
+	}); err != nil {
+		logger.Warn("failed to persist legacy job run", zap.String("job", j.Name), zap.Error(err))
+	}
+}
+
+func (r *Runner) recordTaskDraftRun(d storage.TaskDraft, triggerSource string, startedAt, finishedAt time.Time, result interface{}, runErr error) {
+	if r.executionSvc == nil {
+		return
+	}
+	if err := r.executionSvc.RecordTaskDraftRun(d.ID, triggerSource, startedAt, finishedAt, result, runErr); err != nil {
+		logger.Warn("failed to persist task draft run", zap.String("draft_id", d.ID), zap.Error(err))
+	}
+}
+
+func (r *Runner) recordScheduleRun(s storage.JobSchedule, targetType, targetID, triggerSource string, startedAt, finishedAt time.Time, result interface{}, runErr error) {
+	if r.executionSvc == nil {
+		return
+	}
+	if err := r.executionSvc.RecordScheduleRun(s.ID, targetType, targetID, triggerSource, startedAt, finishedAt, result, runErr); err != nil {
+		logger.Warn("failed to persist schedule run", zap.String("schedule_id", s.ID), zap.Error(err))
+	}
+}
+
+func (r *Runner) recordComplexTaskRun(task storage.ComplexTask, triggerSource string, startedAt, finishedAt time.Time, result interface{}, runErr error) {
+	if r.executionSvc == nil {
+		return
+	}
+	if err := r.executionSvc.RecordComplexTaskRun(task.ID, triggerSource, startedAt, finishedAt, result, runErr); err != nil {
+		logger.Warn("failed to persist complex task run", zap.String("complex_task_id", task.ID), zap.Error(err))
+	}
+}
+
+func statusFromRunError(err error) string {
+	if err != nil {
+		return "failed"
+	}
+	return "success"
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (r *Runner) latestRunLogStatus() (map[string]service.RunLog, error) {
+	if r.runLogsRepo == nil {
+		return map[string]service.RunLog{}, nil
+	}
+	runs, err := r.runLogsRepo.List(0)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]service.RunLog, len(runs))
+	for _, run := range runs {
+		key := latestRunStatusKey(run)
+		if key == "" {
+			continue
+		}
+		if _, exists := out[key]; exists {
+			continue
+		}
+		out[key] = run
+	}
+	return out, nil
+}
+
+func latestRunStatusKey(run service.RunLog) string {
+	switch strings.TrimSpace(run.SourceType) {
+	case "job":
+		return strings.TrimSpace(run.SourceID)
+	case "job_schedule":
+		return scheduleRunKeyPrefix + strings.TrimSpace(run.SourceID)
+	default:
+		return ""
+	}
+}
+
+func applyJobStatusRecord(target *JobStatus, run service.RunLog) {
+	if target == nil {
+		return
+	}
+	lastRun := firstNonEmpty(strings.TrimSpace(run.FinishedAt), strings.TrimSpace(run.StartedAt))
+	if lastRun != "" {
+		if ts, err := time.Parse(time.RFC3339, lastRun); err == nil {
+			target.LastRun = ts
+		}
+	}
+	target.LastOK = run.Status == "success"
+	target.DurationMs = run.DurationMS
+	target.LastError = run.ErrorMessage
 }
 
 func (r *Runner) executeComplexTaskStep(step storage.ComplexTaskStep, current interface{}) (interface{}, error) {
@@ -751,13 +1242,13 @@ func (r *Runner) executeComplexTaskStep(step storage.ComplexTaskStep, current in
 		}
 		client := llm.NewClient(llmCfg)
 		resp, err := client.Chat(llm.ChatRequest{
-			Model:        llmCfg.Model,
-			SystemPrompt: llmCfg.SystemPrompt,
-			Prompt:       prompt,
-			Input:        current,
-			Temperature:  floatPtrIfPositive(llmCfg.Temperature),
-			MaxTokens:    intPtrIfPositive(llmCfg.MaxTokens),
-			Thinking:     boolPtrIfTrue(llmCfg.Thinking),
+			Model:           llmCfg.Model,
+			SystemPrompt:    llmCfg.SystemPrompt,
+			Prompt:          prompt,
+			Input:           current,
+			Temperature:     floatPtrIfPositive(llmCfg.Temperature),
+			MaxTokens:       intPtrIfPositive(llmCfg.MaxTokens),
+			Thinking:        boolPtrIfTrue(llmCfg.Thinking),
 			ReasoningEffort: llmCfg.ReasoningEffort,
 			ResponseFormat:  llmCfg.ResponseFormat,
 		})
@@ -1116,33 +1607,49 @@ func (r *Runner) resolveSelectedLLMConfig(overrides map[string]interface{}) (con
 }
 
 func (r *Runner) resolveLLMConfigFromAPIID(id string) (config.LLMRoleConfig, error) {
-	store := storage.NewLLMAPIStore("llm-apis.yaml")
-	file, err := store.Load()
+	if r.llmAPIRepo == nil {
+		return config.LLMRoleConfig{}, fmt.Errorf("llm api repository is nil")
+	}
+	item, ok, err := r.llmAPIRepo.Get(id)
 	if err != nil {
+		logger.Warn("failed to load llm api from sqlite", zap.String("llm_api_id", id), zap.Error(err))
 		return config.LLMRoleConfig{}, err
 	}
-	id = strings.TrimSpace(id)
-	for _, item := range file.Items {
-		if item.ID != id {
-			continue
-		}
-		return config.LLMRoleConfig{
-			Enabled:         item.Enabled,
-			Provider:        item.Provider,
-			BaseURL:         item.BaseURL,
-			APIKey:          item.APIKey,
-			Model:           item.Model,
-			Timeout:         item.Timeout,
-			MockMode:        r.cfg.LLM.MockMode,
-			SystemPrompt:    item.SystemPrompt,
-			Temperature:     item.Temperature,
-			MaxTokens:       item.MaxTokens,
-			Thinking:        item.Thinking,
-			ReasoningEffort: item.ReasoningEffort,
-			ResponseFormat:  cloneMapAny(item.ResponseFormat),
-		}, nil
+	if !ok {
+		return config.LLMRoleConfig{}, fmt.Errorf("llm api not found: %s", strings.TrimSpace(id))
 	}
-	return config.LLMRoleConfig{}, fmt.Errorf("llm api not found: %s", id)
+	return r.mapLLMAPIItemToRoleConfig(*item), nil
+}
+
+func (r *Runner) mapLLMAPIItemToRoleConfig(item storage.LLMAPIItem) config.LLMRoleConfig {
+	return config.LLMRoleConfig{
+		Enabled:         item.Enabled,
+		Provider:        item.Provider,
+		BaseURL:         item.BaseURL,
+		APIKey:          item.APIKey,
+		Model:           item.Model,
+		Timeout:         item.Timeout,
+		MockMode:        r.cfg.LLM.MockMode,
+		SystemPrompt:    item.SystemPrompt,
+		Temperature:     item.Temperature,
+		MaxTokens:       item.MaxTokens,
+		Thinking:        item.Thinking,
+		ReasoningEffort: item.ReasoningEffort,
+		ResponseFormat:  cloneMapAny(item.ResponseFormat),
+	}
+}
+
+func (r *Runner) loadWebhookItem(id string) (*storage.WebhookItem, bool, error) {
+	id = strings.TrimSpace(id)
+	if r.webhookRepo == nil {
+		return nil, false, fmt.Errorf("webhook repository is nil")
+	}
+	item, ok, err := r.webhookRepo.Get(id)
+	if err != nil {
+		logger.Warn("failed to load webhook from sqlite", zap.String("webhook_id", id), zap.Error(err))
+		return nil, false, err
+	}
+	return item, ok, nil
 }
 
 func applyLLMRoleOverrides(llmCfg config.LLMRoleConfig, overrides map[string]interface{}) config.LLMRoleConfig {
@@ -1210,33 +1717,74 @@ func (r *Runner) executeTargetOutput(targetType, targetID string) (interface{}, 
 		out, _, err := r.runTaskDraft(draft)
 		return out, err
 	case "complex_task":
-		store := storage.ComplexTasksStore{Path: "complex-tasks.yaml"}
-		task, found, err := store.Get(targetID)
+		task, err := r.loadComplexTask(targetID)
 		if err != nil {
 			return nil, err
 		}
-		if !found {
-			return nil, fmt.Errorf("complex task not found: %s", targetID)
-		}
-		result, err := r.RunComplexTask(*task)
+		result, err := r.runComplexTask(task, "internal")
 		if err != nil {
 			return nil, err
 		}
 		return result.FinalOutput, nil
 	case "scheduled_task", "job_schedule":
-		store := storage.JobSchedulesStore{Path: "job-schedules.yaml"}
-		s, found, err := store.Get(targetID)
+		normalized, err := r.loadSchedule(targetID)
 		if err != nil {
 			return nil, err
 		}
-		if !found {
-			return nil, fmt.Errorf("job schedule not found: %s", targetID)
-		}
-		nextType, nextID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+		nextType, nextID := normalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
 		return r.executeTargetOutput(nextType, nextID)
+	case "external_ip_sync":
+		if r.executeExternalIPSync == nil {
+			r.executeExternalIPSync = r.runExternalIPSyncTask
+		}
+		return r.executeExternalIPSync(targetID)
 	default:
 		return nil, fmt.Errorf("unsupported target_type: %s", targetType)
 	}
+}
+
+func extractCIDRsFromPayload(payload map[string]interface{}) []string {
+	set := map[string]struct{}{}
+	collectCIDRs(payload, set)
+	out := make([]string, 0, len(set))
+	for cidr := range set {
+		out = append(out, cidr)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectCIDRs(value interface{}, set map[string]struct{}) {
+	switch vv := value.(type) {
+	case map[string]interface{}:
+		for key, child := range vv {
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "cidr", "ipv4prefix", "ipv6prefix":
+				appendCIDRIfValid(set, asString(child))
+			case "cidrs", "ips", "ip_list", "items", "data", "list":
+				collectCIDRs(child, set)
+			default:
+				collectCIDRs(child, set)
+			}
+		}
+	case []interface{}:
+		for _, child := range vv {
+			collectCIDRs(child, set)
+		}
+	case string:
+		appendCIDRIfValid(set, vv)
+	}
+}
+
+func appendCIDRIfValid(set map[string]struct{}, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	if _, _, err := net.ParseCIDR(value); err != nil {
+		return
+	}
+	set[value] = struct{}{}
 }
 
 func (r *Runner) executeTargetOutputForSchedule(targetType, targetID string) (interface{}, error) {
@@ -1249,15 +1797,11 @@ func (r *Runner) executeTargetOutputForSchedule(targetType, targetID string) (in
 		out, _, err := r.runTaskDraftWithDelivery(draft, false)
 		return out, err
 	case "scheduled_task", "job_schedule":
-		store := storage.JobSchedulesStore{Path: "job-schedules.yaml"}
-		s, found, err := store.Get(targetID)
+		normalized, err := r.loadSchedule(targetID)
 		if err != nil {
 			return nil, err
 		}
-		if !found {
-			return nil, fmt.Errorf("job schedule not found: %s", targetID)
-		}
-		nextType, nextID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+		nextType, nextID := normalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
 		return r.executeTargetOutputForSchedule(nextType, nextID)
 	default:
 		return r.executeTargetOutput(targetType, targetID)

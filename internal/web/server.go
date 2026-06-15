@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,9 +18,13 @@ import (
 
 	"sealsuite-operation/internal/api"
 	"sealsuite-operation/internal/config"
+	appdb "sealsuite-operation/internal/db"
 	"sealsuite-operation/internal/llm"
+	"sealsuite-operation/internal/repository"
+	sqliteRepo "sealsuite-operation/internal/repository/sqlite"
 	"sealsuite-operation/internal/runner"
 	"sealsuite-operation/internal/sealsuite"
+	"sealsuite-operation/internal/service"
 	"sealsuite-operation/internal/storage"
 	"sealsuite-operation/internal/web/assets"
 	"sealsuite-operation/internal/webhook"
@@ -28,7 +33,11 @@ import (
 )
 
 func NewServer(cfg *config.Config, r *runner.Runner) (*http.Server, error) {
-	router, err := NewRouter(cfg, r)
+	return NewServerWithServices(cfg, r, nil)
+}
+
+func NewServerWithServices(cfg *config.Config, r *runner.Runner, services *service.Services) (*http.Server, error) {
+	router, err := newRouter(cfg, r, services)
 	if err != nil {
 		return nil, err
 	}
@@ -39,19 +48,201 @@ func NewServer(cfg *config.Config, r *runner.Runner) (*http.Server, error) {
 	}, nil
 }
 
+func openSQLiteDB(cfg *config.Config) (*sql.DB, error) {
+	dbPath := strings.TrimSpace(cfg.Database.Path)
+	if dbPath == "" {
+		dbPath = "./data/app.db"
+	}
+
+	appDB, err := appdb.OpenSQLite(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := appdb.Migrate(appDB); err != nil {
+		_ = appDB.Close()
+		return nil, err
+	}
+	return appDB, nil
+}
+
+func newServices(cfg *config.Config) (*service.Services, error) {
+	appDB, err := openSQLiteDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	taskDraftRepo := sqliteRepo.NewTaskDraftRepository(appDB)
+	scheduleRepo := sqliteRepo.NewScheduleRepository(appDB)
+	complexTaskRepo := sqliteRepo.NewComplexTaskRepository(appDB)
+	externalIPSyncRepo := sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
+	return service.NewServices(taskDraftRepo, scheduleRepo, complexTaskRepo, externalIPSyncRepo), nil
+}
+
 func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
+	return newRouter(cfg, r, nil)
+}
+
+func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services) (http.Handler, error) {
 	rr := chi.NewRouter()
-	jobsStore := storage.JobsStore{Path: "jobs.yaml"}
-	templatesStore := storage.TemplatesStore{Path: "api-templates.yaml"}
-	outputTemplatesStore := storage.OutputTemplatesStore{Path: "output-templates.yaml"}
 	configStore := storage.ConfigStore{Path: "config.yaml"}
-	connectionsStore := storage.ConnectionsStore{Path: "connections.yaml"}
-	llmAPIStore := storage.NewLLMAPIStore("llm-apis.yaml")
-	webhookStore := storage.NewWebhookStore("webhooks.yaml")
-	taskDraftsStore := storage.TaskDraftsStore{Path: "task-drafts.yaml"}
-	jobSchedulesStore := storage.JobSchedulesStore{Path: "job-schedules.yaml"}
-	complexTasksStore := storage.ComplexTasksStore{Path: "complex-tasks.yaml"}
-	jobRunsStore := storage.JobRunsStore{Path: "job-runs.json"}
+	appDB, err := openSQLiteDB(cfg)
+	if err != nil && services == nil {
+		return nil, err
+	}
+	var (
+		taskDraftRepo      *sqliteRepo.TaskDraftRepository
+		scheduleRepo       *sqliteRepo.ScheduleRepository
+		legacyJobRepo      repository.LegacyJobRepository
+		connectionRepo     *sqliteRepo.ConnectionsRepository
+		llmAPIRepo         *sqliteRepo.LLMAPIRepository
+		webhookRepo        *sqliteRepo.WebhookRepository
+		templateRepo       *sqliteRepo.TemplateRepository
+		outputTemplateRepo *sqliteRepo.OutputTemplateRepository
+		complexTaskRepo    *sqliteRepo.ComplexTaskRepository
+		externalIPSyncRepo *sqliteRepo.ExternalIPSyncTaskRepository
+		jobRunsRepo        *sqliteRepo.JobRunsRepository
+	)
+	if appDB != nil {
+		taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
+		scheduleRepo = sqliteRepo.NewScheduleRepository(appDB)
+		legacyJobRepo = sqliteRepo.NewLegacyJobRepository(appDB)
+		connectionRepo = sqliteRepo.NewConnectionsRepository(appDB)
+		llmAPIRepo = sqliteRepo.NewLLMAPIRepository(appDB)
+		webhookRepo = sqliteRepo.NewWebhookRepository(appDB)
+		templateRepo = sqliteRepo.NewTemplateRepository(appDB)
+		outputTemplateRepo = sqliteRepo.NewOutputTemplateRepository(appDB)
+		complexTaskRepo = sqliteRepo.NewComplexTaskRepository(appDB)
+		externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
+		jobRunsRepo = sqliteRepo.NewJobRunsRepository(appDB)
+	}
+	if services == nil {
+		services = service.NewServices(
+			taskDraftRepo,
+			scheduleRepo,
+			complexTaskRepo,
+			externalIPSyncRepo,
+		)
+	}
+
+	saveTaskDraft := func(draft storage.TaskDraft) error {
+		return services.TaskDrafts.Save(draft)
+	}
+
+	saveJobSchedule := func(sched storage.JobSchedule) error {
+		return services.Schedules.Save(sched)
+	}
+
+	saveComplexTask := func(task storage.ComplexTask) error {
+		return services.ComplexTasks.Save(task)
+	}
+
+	deleteComplexTask := func(id string) error {
+		return services.ComplexTasks.Delete(id)
+	}
+
+	loadTaskDrafts := func() (*storage.TaskDraftsFile, error) {
+		items, err := taskDraftRepo.List()
+		if err != nil {
+			return nil, err
+		}
+		tf := &storage.TaskDraftsFile{Version: 1, Items: items}
+		storage.EnsureTaskDraftsFileDefaults(tf)
+		return tf, nil
+	}
+
+	getTaskDraft := func(id string) (storage.TaskDraft, bool, error) {
+		return taskDraftRepo.Get(id)
+	}
+
+	getJobSchedule := func(id string) (storage.JobSchedule, bool, error) {
+		return scheduleRepo.Get(id)
+	}
+
+	loadConnections := func() (*storage.ConnectionsFile, error) {
+		return loadConnectionsFromRepo(connectionRepo)
+	}
+
+	loadLLMAPIs := func() (*storage.LLMAPIFile, error) {
+		return loadLLMAPIsFromRepo(llmAPIRepo)
+	}
+
+	loadWebhooks := func() (*storage.WebhookFile, error) {
+		return loadWebhooksFromRepo(webhookRepo)
+	}
+
+	loadTemplates := func() (*storage.TemplatesFile, error) {
+		return loadTemplatesFromRepo(templateRepo)
+	}
+
+	loadOutputTemplates := func() (*storage.OutputTemplatesFile, error) {
+		return loadOutputTemplatesFromRepo(outputTemplateRepo)
+	}
+
+	loadComplexTasks := func() (*storage.ComplexTasksFile, error) {
+		return loadComplexTasksFromRepo(complexTaskRepo)
+	}
+
+	listExternalIPSyncTasks := func() ([]storage.ExternalIPSyncTask, error) {
+		if externalIPSyncRepo == nil {
+			return nil, fmt.Errorf("external ip sync task repository is nil")
+		}
+		return externalIPSyncRepo.List()
+	}
+
+	getExternalIPSyncTask := func(id string) (storage.ExternalIPSyncTask, bool, error) {
+		if externalIPSyncRepo == nil {
+			return storage.ExternalIPSyncTask{}, false, fmt.Errorf("external ip sync task repository is nil")
+		}
+		return externalIPSyncRepo.Get(id)
+	}
+
+	saveExternalIPSyncTask := func(task storage.ExternalIPSyncTask) error {
+		if services == nil || services.ExternalIPSync == nil {
+			return fmt.Errorf("external ip sync task service is nil")
+		}
+		return services.ExternalIPSync.Save(task)
+	}
+
+	deleteExternalIPSyncTask := func(id string) error {
+		if externalIPSyncRepo == nil {
+			return fmt.Errorf("external ip sync task repository is nil")
+		}
+		return externalIPSyncRepo.Delete(id)
+	}
+
+	listExternalIPSyncResources := func() ([]map[string]interface{}, string, string, error) {
+		snapshotItems := []map[string]interface{}{}
+		if externalIPSyncRepo != nil {
+			tasks, err := externalIPSyncRepo.List()
+			if err != nil {
+				return nil, "", "", err
+			}
+			snapshotItems = externalIPSyncResourceItemsFromTasks(tasks)
+		}
+
+		liveItems, source, liveErr := loadExternalIPSyncResourceItems(cfg, configStore, loadTemplates)
+		items := mergeExternalIPSyncResourceItems(snapshotItems, liveItems)
+		if len(items) == 0 && len(snapshotItems) > 0 {
+			source = "task_snapshots"
+		}
+		warning := ""
+		if liveErr != nil {
+			warning = liveErr.Error()
+		}
+		return items, source, warning, nil
+	}
+
+	getTemplate := func(id string) (*storage.Template, bool, error) {
+		return getTemplateFromRepo(templateRepo, id)
+	}
+
+	getOutputTemplate := func(id string) (*storage.OutputTemplate, bool, error) {
+		return getOutputTemplateFromRepo(outputTemplateRepo, id)
+	}
+
+	getComplexTask := func(id string) (storage.ComplexTask, bool, error) {
+		return getComplexTaskFromRepo(complexTaskRepo, id)
+	}
 
 	hotReloadRuntime := func() error {
 		newCfg, err := config.Load("config.yaml")
@@ -100,7 +291,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		// --- task drafts: API 工具箱产出的任务定义草稿 ---
 		apiR.Get("/task-drafts", func(w http.ResponseWriter, req *http.Request) {
-			tf, err := taskDraftsStore.Load()
+			tf, err := loadTaskDrafts()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -110,7 +301,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Get("/task-drafts/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			draft, ok, err := taskDraftsStore.Get(id)
+			draft, ok, err := getTaskDraft(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -133,7 +324,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "id/name required"})
 				return
 			}
-			if err := taskDraftsStore.Upsert(draft); err != nil {
+			if err := saveTaskDraft(draft); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -160,7 +351,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "name required"})
 				return
 			}
-			if err := taskDraftsStore.Upsert(draft); err != nil {
+			if err := saveTaskDraft(draft); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -170,7 +361,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/task-drafts/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if refs, err := referencedSchedulesByDraft(jobSchedulesStore, id); err != nil {
+			if refs, err := referencedSchedulesByDraft(scheduleRepo, id); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			} else if len(refs) > 0 {
@@ -180,7 +371,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				})
 				return
 			}
-			if err := taskDraftsStore.Delete(id); err != nil {
+			if err := taskDraftRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -195,17 +386,41 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
+			latestScheduleRuns, _ := latestScheduleRunLogs(jobRunsRepo)
+			scheduleStatusPayload := map[string]interface{}{}
+			for _, sched := range jf.Items {
+				statusItem := jobStatusPayload(runs[sched.ID])
+				normalizeScheduleTarget(&sched)
+				if sched.TargetType == "external_ip_sync" {
+					if latestRun, ok := latestScheduleRuns[sched.ID]; ok {
+						if summary := externalIPSyncRunSummaryFromRunLog(latestRun); len(summary) > 0 {
+							statusItem["summary"] = summary
+							statusItem["external_ip_sync_summary"] = summary
+						}
+					}
+					if task, ok, err := getExternalIPSyncTask(sched.TargetID); err == nil && ok {
+						statusItem["task_summary"] = buildExternalIPSyncTaskSummary(task)
+					}
+				}
+				scheduleStatusPayload[sched.ID] = statusItem
+			}
+			for scheduleID, status := range runs {
+				if _, ok := scheduleStatusPayload[scheduleID]; ok {
+					continue
+				}
+				scheduleStatusPayload[scheduleID] = jobStatusPayload(status)
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"version":         jf.Version,
 				"items":           jf.Items,
 				"drafts":          drafts,
-				"schedule_status": runs,
+				"schedule_status": scheduleStatusPayload,
 			})
 		})
 
 		apiR.Get("/job-schedules/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			sched, ok, err := jobSchedulesStore.Get(id)
+			sched, ok, err := getJobSchedule(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -228,11 +443,30 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			if targetType == "task_draft" {
 				targetSummary["draft"] = drafts[targetID]
 			}
+			runPayload := jobStatusPayload(runs[id])
+			latestScheduleRuns, _ := latestScheduleRunLogs(jobRunsRepo)
+			if targetType == "external_ip_sync" {
+				if task, found, err := getExternalIPSyncTask(targetID); err == nil && found {
+					targetSummary["external_task"] = task
+					targetSummary["external_ip_sync_summary"] = buildExternalIPSyncTaskSummary(task)
+				}
+			}
+			if latestRun, ok := latestScheduleRuns[id]; ok && targetType == "external_ip_sync" {
+				if summary := externalIPSyncRunSummaryFromRunLog(latestRun); len(summary) > 0 {
+					runPayload["summary"] = summary
+					runPayload["external_ip_sync_summary"] = summary
+					if existing, ok := targetSummary["external_ip_sync_summary"].(map[string]interface{}); ok {
+						targetSummary["external_ip_sync_summary"] = mergeStringAnyMap(existing, summary)
+					} else {
+						targetSummary["external_ip_sync_summary"] = cloneMapAny(summary)
+					}
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"schedule": sched,
 				"draft":    drafts[targetID],
 				"target":   targetSummary,
-				"run":      runs[id],
+				"run":      runPayload,
 			})
 		})
 
@@ -248,11 +482,11 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				return
 			}
 			normalizeScheduleTarget(&sched)
-			if err := validateScheduleTarget(sched, taskDraftsStore, complexTasksStore); err != nil {
+			if err := validateScheduleTarget(sched, taskDraftRepo, complexTaskRepo, externalIPSyncRepo); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
-			if err := jobSchedulesStore.Upsert(sched); err != nil {
+			if err := saveJobSchedule(sched); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -276,11 +510,11 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				return
 			}
 			normalizeScheduleTarget(&sched)
-			if err := validateScheduleTarget(sched, taskDraftsStore, complexTasksStore); err != nil {
+			if err := validateScheduleTarget(sched, taskDraftRepo, complexTaskRepo, externalIPSyncRepo); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
-			if err := jobSchedulesStore.Upsert(sched); err != nil {
+			if err := saveJobSchedule(sched); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -290,9 +524,32 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/job-schedules/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if err := jobSchedulesStore.Delete(id); err != nil {
+			shouldDeleteExternalTask := false
+			externalTaskID := ""
+			if sched, ok, err := getJobSchedule(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			} else if ok {
+				targetType, targetID := normalizeTarget(sched.TargetType, sched.TargetID, sched.DraftID)
+				if targetType == "external_ip_sync" && targetID != "" {
+					refs, err := referencedSchedulesByTarget(scheduleRepo, targetType, targetID, id)
+					if err != nil {
+						writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+						return
+					}
+					shouldDeleteExternalTask = len(refs) == 0
+					externalTaskID = targetID
+				}
+			}
+			if err := scheduleRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
+			}
+			if shouldDeleteExternalTask {
+				if err := deleteExternalIPSyncTask(externalTaskID); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					return
+				}
 			}
 			_ = r.Reload()
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -311,9 +568,74 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			})
 		})
 
+		// --- external ip sync tasks: 可手工配置的 Google IP 同步任务定义 ---
+		apiR.Get("/external-ip-sync-tasks", func(w http.ResponseWriter, req *http.Request) {
+			items, err := listExternalIPSyncTasks()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+		})
+
+		apiR.Get("/external-ip-sync-resources", func(w http.ResponseWriter, req *http.Request) {
+			items, source, warning, err := listExternalIPSyncResources()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			resp := map[string]interface{}{
+				"items":  items,
+				"source": source,
+			}
+			if warning != "" {
+				resp["warning"] = warning
+			}
+			writeJSON(w, http.StatusOK, resp)
+		})
+
+		apiR.Post("/external-ip-sync-tasks", func(w http.ResponseWriter, req *http.Request) {
+			var task storage.ExternalIPSyncTask
+			if err := json.NewDecoder(req.Body).Decode(&task); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := saveExternalIPSyncTask(task); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Get("/external-ip-sync-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			task, ok, err := getExternalIPSyncTask(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "external ip sync task not found"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"task":    task,
+				"summary": buildExternalIPSyncTaskSummary(task),
+			})
+		})
+
+		apiR.Delete("/external-ip-sync-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if err := deleteExternalIPSyncTask(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
 		// --- complex tasks: 工作流编排与未来 Agent 扩展 ---
 		apiR.Get("/complex-tasks", func(w http.ResponseWriter, req *http.Request) {
-			cf, err := complexTasksStore.Load()
+			cf, err := loadComplexTasks()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -335,7 +657,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			result, err := r.RunComplexTask(task)
 			delivery := webhook.DeliveryResult{Attempted: false}
 			if err == nil {
-				delivery = deliverWebhookFromConfig(req.Context(), webhookStore, task.WebhookEnabled, task.WebhookConfigID, webhook.Envelope{
+				delivery = deliverWebhookFromConfig(req.Context(), webhookRepo, task.WebhookEnabled, task.WebhookConfigID, webhook.Envelope{
 					Event:      "task.completed",
 					SourceType: "complex_task",
 					SourceID:   firstNonEmptyString(task.ID, "temporary_complex_task"),
@@ -361,7 +683,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Get("/complex-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			task, ok, err := complexTasksStore.Get(id)
+			task, ok, err := getComplexTask(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -374,7 +696,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 		})
 
 		apiR.Get("/output-templates", func(w http.ResponseWriter, req *http.Request) {
-			tf, err := outputTemplatesStore.Load()
+			tf, err := loadOutputTemplates()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -384,7 +706,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Get("/output-templates/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			item, ok, err := outputTemplatesStore.Get(id)
+			item, ok, err := getOutputTemplate(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -406,7 +728,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "id/name/format required"})
 				return
 			}
-			if err := outputTemplatesStore.Upsert(item); err != nil {
+			if err := outputTemplateRepo.Upsert(item); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -415,7 +737,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/output-templates/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if err := outputTemplatesStore.Delete(id); err != nil {
+			if err := outputTemplateRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -424,7 +746,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Post("/complex-tasks/{id}/run", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			task, ok, err := complexTasksStore.Get(id)
+			task, ok, err := getComplexTask(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -433,10 +755,10 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "complex task not found"})
 				return
 			}
-			result, err := r.RunComplexTask(*task)
+			result, err := r.RunComplexTask(task)
 			delivery := webhook.DeliveryResult{Attempted: false}
 			if err == nil {
-				delivery = deliverWebhookFromConfig(req.Context(), webhookStore, task.WebhookEnabled, task.WebhookConfigID, webhook.Envelope{
+				delivery = deliverWebhookFromConfig(req.Context(), webhookRepo, task.WebhookEnabled, task.WebhookConfigID, webhook.Envelope{
 					Event:      "task.completed",
 					SourceType: "complex_task",
 					SourceID:   firstNonEmptyString(task.ID, id),
@@ -471,7 +793,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "id/name required"})
 				return
 			}
-			if err := complexTasksStore.Upsert(task); err != nil {
+			if err := saveComplexTask(task); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -497,7 +819,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "name required"})
 				return
 			}
-			if err := complexTasksStore.Upsert(task); err != nil {
+			if err := saveComplexTask(task); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -506,16 +828,16 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/complex-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if err := complexTasksStore.Delete(id); err != nil {
+			if err := deleteComplexTask(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 		})
 
-		// --- connections.yaml：最近启用清单（最多 3 条） ---
+		// --- 飞连连接配置中心（最近启用清单，最多 3 条） ---
 		apiR.Get("/connections", func(w http.ResponseWriter, req *http.Request) {
-			cf, err := connectionsStore.Load()
+			cf, err := loadConnections()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -599,7 +921,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				}
 			}
 			createdAt := time.Now().Format(time.RFC3339)
-			_ = connectionsStore.AddAndActivate(storage.ConnectionItem{
+			connItem := storage.ConnectionItem{
 				ID:          id,
 				Name:        name,
 				Scheme:      scheme,
@@ -608,15 +930,27 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				AccessKeyID: accessKey,
 				SecretRef:   "config",
 				CreatedAt:   createdAt,
-			})
+			}
+			if err := connectionRepo.AddAndActivate(connItem); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
 
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": id})
 		})
 
 		apiR.Post("/connections/{id}/activate", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			it, err := connectionsStore.Activate(id)
+			it, ok, err := getConnectionFromRepo(connectionRepo, id)
 			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": fmt.Sprintf("connection not found: %s", id)})
+				return
+			}
+			if err := connectionRepo.AddAndActivate(*it); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -644,7 +978,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/connections/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			cf, err := connectionsStore.Load()
+			cf, err := loadConnections()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -653,7 +987,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "cannot delete active connection"})
 				return
 			}
-			if err := connectionsStore.Delete(id); err != nil {
+			if err := connectionRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -690,7 +1024,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 		apiR.Get("/settings/llm", getLLM)
 
 		apiR.Get("/settings/llm/apis", func(w http.ResponseWriter, req *http.Request) {
-			file, err := llmAPIStore.Load()
+			file, err := loadLLMAPIs()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -736,13 +1070,13 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				ResponseFormat:  mapFromAny(in["response_format"]),
 				SystemPrompt:    firstNonEmptyString(in["system_prompt"], ""),
 			}
-			if err := llmAPIStore.UpsertAndMaybeActivate(item, false); err != nil {
+			if err := llmAPIRepo.UpsertAndMaybeActivate(item, false); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
 			if activate {
-				file, err := llmAPIStore.Load()
+				file, err := loadLLMAPIs()
 				if err != nil {
 					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 					return
@@ -760,13 +1094,13 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 					return
 				}
-				if _, err := llmAPIStore.Activate(id); err != nil {
+				if err := llmAPIRepo.UpsertAndMaybeActivate(*stored, true); err != nil {
 					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 					return
 				}
 			}
 
-			file, err := llmAPIStore.Load()
+			file, err := loadLLMAPIs()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -786,7 +1120,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Post("/settings/llm/apis/{id}/activate", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			file, err := llmAPIStore.Load()
+			file, err := loadLLMAPIs()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -804,7 +1138,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
-			if _, err := llmAPIStore.Activate(id); err != nil {
+			if err := llmAPIRepo.UpsertAndMaybeActivate(*item, true); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -813,7 +1147,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/settings/llm/apis/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if err := llmAPIStore.Delete(id); err != nil {
+			if err := llmAPIRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -821,7 +1155,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 		})
 
 		apiR.Get("/settings/webhooks", func(w http.ResponseWriter, req *http.Request) {
-			file, err := webhookStore.Load()
+			file, err := loadWebhooks()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -857,7 +1191,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "id/name/url required"})
 				return
 			}
-			if err := webhookStore.Upsert(item); err != nil {
+			if err := webhookRepo.Upsert(item); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -866,7 +1200,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/settings/webhooks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if err := webhookStore.Delete(id); err != nil {
+			if err := webhookRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1002,10 +1336,10 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			roleCfg.Enabled = true
 			client := llm.NewClient(roleCfg)
 			resp, err := client.Chat(llm.ChatRequest{
-				Prompt:       "请回答：LLM 连接测试成功",
-				SystemPrompt: roleCfg.SystemPrompt,
-				Input:        map[string]interface{}{"ping": "pong"},
-				Thinking:     boolPtr(roleCfg.Thinking),
+				Prompt:          "请回答：LLM 连接测试成功",
+				SystemPrompt:    roleCfg.SystemPrompt,
+				Input:           map[string]interface{}{"ping": "pong"},
+				Thinking:        boolPtr(roleCfg.Thinking),
 				ReasoningEffort: roleCfg.ReasoningEffort,
 				ResponseFormat:  roleCfg.ResponseFormat,
 			})
@@ -1092,7 +1426,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				tmp.SecretKey = v
 			}
 
-			tf, err := templatesStore.Load()
+			tf, err := loadTemplates()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1149,13 +1483,13 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			}
 
 			resp := map[string]interface{}{
-				"token_ok":         tokenOK,
-				"token_preview":    tokenPreview,
-				"token_expires_in": exp,
+				"token_ok":              tokenOK,
+				"token_preview":         tokenPreview,
+				"token_expires_in":      exp,
 				"token_request_preview": tokenRequestPreview(tmp, "temporary_form"),
-				"probe_ok":         probeOK,
-				"probe_result":     probeResult,
-				"probe_error":      probeError,
+				"probe_ok":              probeOK,
+				"probe_result":          probeResult,
+				"probe_error":           probeError,
 			}
 			if tokErr != nil {
 				resp["token_error"] = tokErr.Error()
@@ -1186,7 +1520,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Get("/jobs/{name}", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
-			job, ok, err := jobsStore.Get(name)
+			job, ok, err := legacyJobRepo.Get(name)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1208,7 +1542,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
 				return
 			}
-			if err := jobsStore.Upsert(job); err != nil {
+			if err := legacyJobRepo.Upsert(job); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1222,7 +1556,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
 				return
 			}
-			if err := jobsStore.Save(&jf); err != nil {
+			if err := legacyJobRepo.Save(&jf); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1244,7 +1578,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "path name and body name mismatch"})
 				return
 			}
-			if err := jobsStore.Upsert(job); err != nil {
+			if err := legacyJobRepo.Upsert(job); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1254,7 +1588,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/jobs/{name}", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
-			if err := jobsStore.Delete(name); err != nil {
+			if err := legacyJobRepo.Delete(name); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1264,7 +1598,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Post("/jobs/{name}/enable", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
-			jf, err := jobsStore.Load()
+			jf, err := legacyJobRepo.Load()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1274,7 +1608,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 					jf.Jobs[i].Enabled = true
 				}
 			}
-			if err := jobsStore.Save(jf); err != nil {
+			if err := legacyJobRepo.Save(jf); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1284,7 +1618,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Post("/jobs/{name}/disable", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
-			jf, err := jobsStore.Load()
+			jf, err := legacyJobRepo.Load()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1294,7 +1628,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 					jf.Jobs[i].Enabled = false
 				}
 			}
-			if err := jobsStore.Save(jf); err != nil {
+			if err := legacyJobRepo.Save(jf); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1313,7 +1647,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		// --- API 工具箱 ---
 		apiR.Get("/api/templates", func(w http.ResponseWriter, req *http.Request) {
-			tf, err := templatesStore.Load()
+			tf, err := loadTemplates()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1323,7 +1657,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Get("/api/templates/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			tpl, ok, err := templatesStore.Get(id)
+			tpl, ok, err := getTemplate(id)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1341,7 +1675,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
 				return
 			}
-			if err := templatesStore.Upsert(tpl); err != nil {
+			if err := templateRepo.Upsert(tpl); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1363,7 +1697,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "path id and body id mismatch"})
 				return
 			}
-			if err := templatesStore.Upsert(tpl); err != nil {
+			if err := templateRepo.Upsert(tpl); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1373,17 +1707,17 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 
 		apiR.Delete("/api/templates/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			if refs, err := referencedJobsByTemplate(jobsStore, id); err != nil {
+			if refs, err := referencedLegacyJobsByTemplate(legacyJobRepo, id); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			} else if len(refs) > 0 {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"error":         "template is referenced by jobs",
+					"error":         "template is referenced by legacy jobs",
 					"referenced_by": refs,
 				})
 				return
 			}
-			if err := templatesStore.Delete(id); err != nil {
+			if err := templateRepo.Delete(id); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1397,7 +1731,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
 				return
 			}
-			if err := templatesStore.Save(&tf); err != nil {
+			if err := templateRepo.Save(&tf); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1460,9 +1794,9 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			delivery := webhook.DeliveryResult{Attempted: false}
 			if useTaskDraftPipeline {
 				draft := storage.TaskDraft{
-					ID:              firstNonEmptyString(inMap["draft_id"], "temporary_execute"),
-					Name:            firstNonEmptyString(inMap["name"], "飞连任务"),
-					Mode:            firstNonEmptyString(in.Mode, "api_only"),
+					ID:               firstNonEmptyString(inMap["draft_id"], "temporary_execute"),
+					Name:             firstNonEmptyString(inMap["name"], "飞连任务"),
+					Mode:             firstNonEmptyString(in.Mode, "api_only"),
 					SourceTemplateID: in.TemplateID,
 					InputConfig: map[string]interface{}{
 						"template_id": in.TemplateID,
@@ -1484,7 +1818,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				execOut, err = r.Executor().Execute(in)
 				out = execOut
 				if err == nil && pushOnce && webhookEnabled && webhookID != "" {
-					delivery = deliverWebhookFromConfig(req.Context(), webhookStore, webhookEnabled, webhookID, webhook.Envelope{
+					delivery = deliverWebhookFromConfig(req.Context(), webhookRepo, webhookEnabled, webhookID, webhook.Envelope{
 						Event:      "task.completed",
 						SourceType: "api_task",
 						SourceID:   firstNonEmptyString(inMap["draft_id"], "temporary_execute"),
@@ -1546,7 +1880,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "job_name/cron/type required"})
 				return
 			}
-			jf, err := jobsStore.Load()
+			jf, err := legacyJobRepo.Load()
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
@@ -1574,7 +1908,7 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			if !replaced {
 				jf.Jobs = append(jf.Jobs, newJob)
 			}
-			if err := jobsStore.Save(jf); err != nil {
+			if err := legacyJobRepo.Save(jf); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return
 			}
@@ -1597,27 +1931,41 @@ func NewRouter(cfg *config.Config, r *runner.Runner) (http.Handler, error) {
 			writeJSON(w, http.StatusOK, map[string]interface{}{"text": text})
 		})
 		apiR.Get("/logs/executions", func(w http.ResponseWriter, req *http.Request) {
-			jf, err := jobRunsStore.Load()
+			if jobRunsRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "job runs repository is nil"})
+				return
+			}
+			runs, err := jobRunsRepo.List(200)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
-			items := make([]map[string]interface{}, 0, len(jf.Items))
-			for key, item := range jf.Items {
-				targetType := "legacy_job"
-				targetID := key
-				if strings.HasPrefix(key, "schedule:") {
-					targetType = "scheduled_task"
-					targetID = strings.TrimPrefix(key, "schedule:")
+			items := make([]map[string]interface{}, 0, len(runs))
+			for _, item := range runs {
+				targetType := item.TargetType
+				targetID := item.TargetID
+				if targetType == "" && item.SourceType == "job" {
+					targetType = "legacy_job"
+				}
+				if targetID == "" {
+					targetID = item.SourceID
+				}
+				lastRun := item.FinishedAt
+				if lastRun == "" {
+					lastRun = item.StartedAt
 				}
 				items = append(items, map[string]interface{}{
-					"run_id":       key,
-					"target_type":  targetType,
-					"target_id":    targetID,
-					"last_run":     item.LastRun,
-					"ok":           item.OK,
-					"duration_ms":  item.DurationMs,
-					"error":        item.Error,
+					"run_id":         item.ID,
+					"source_type":    item.SourceType,
+					"source_id":      item.SourceID,
+					"target_type":    targetType,
+					"target_id":      targetID,
+					"status":         item.Status,
+					"trigger_source": item.TriggerSource,
+					"last_run":       lastRun,
+					"ok":             item.Status == "success",
+					"duration_ms":    item.DurationMS,
+					"error":          item.ErrorMessage,
 				})
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
@@ -1635,6 +1983,130 @@ func mask(s string) string {
 		return "****"
 	}
 	return s[:4] + "…" + s[len(s)-3:]
+}
+
+func jobStatusPayload(status *runner.JobStatus) map[string]interface{} {
+	if status == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"last_run":    status.LastRun,
+		"last_ok":     status.LastOK,
+		"last_error":  status.LastError,
+		"duration_ms": status.DurationMs,
+		"next_run":    status.NextRun,
+	}
+}
+
+func latestScheduleRunLogs(repo *sqliteRepo.JobRunsRepository) (map[string]service.RunLog, error) {
+	if repo == nil {
+		return map[string]service.RunLog{}, nil
+	}
+	runs, err := repo.List(0)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]service.RunLog, len(runs))
+	for _, item := range runs {
+		if strings.TrimSpace(item.SourceType) != "job_schedule" {
+			continue
+		}
+		scheduleID := strings.TrimSpace(item.SourceID)
+		if scheduleID == "" {
+			continue
+		}
+		if _, exists := out[scheduleID]; exists {
+			continue
+		}
+		out[scheduleID] = item
+	}
+	return out, nil
+}
+
+func buildExternalIPSyncTaskSummary(task storage.ExternalIPSyncTask) map[string]interface{} {
+	task = storage.NormalizeExternalIPSyncTask(task)
+	resourceLabel := strings.TrimSpace(task.ResourceID)
+	if name := strings.TrimSpace(task.ResourceNameSnapshot); name != "" {
+		if resourceLabel != "" {
+			resourceLabel = fmt.Sprintf("%s (%s)", name, resourceLabel)
+		} else {
+			resourceLabel = name
+		}
+	}
+	return map[string]interface{}{
+		"task_id":               task.ID,
+		"source_type":           task.SourceType,
+		"source_label":          externalIPSyncSourceLabel(task.SourceType),
+		"source_url":            task.SourceURL,
+		"ip_version":            task.IPVersion,
+		"ip_version_label":      externalIPSyncIPVersionLabel(task.IPVersion),
+		"resource_id":           task.ResourceID,
+		"resource_name_snapshot": task.ResourceNameSnapshot,
+		"resource_label":        resourceLabel,
+		"write_action":          task.WriteAction,
+		"write_api_path":        firstNonEmptyString(task.FeilianAPIPath, "/api/open/v1/addr/management/add"),
+		"dry_run":               task.DryRun,
+		"skip_when_empty":       task.SkipWhenEmpty,
+	}
+}
+
+func externalIPSyncSourceLabel(sourceType string) string {
+	switch strings.TrimSpace(sourceType) {
+	case "", "google_ip_ranges":
+		return "Google IP Ranges"
+	default:
+		return sourceType
+	}
+}
+
+func externalIPSyncIPVersionLabel(version string) string {
+	switch strings.TrimSpace(strings.ToLower(version)) {
+	case "ipv6":
+		return "IPv6"
+	case "all":
+		return "IPv4 + IPv6"
+	case "", "ipv4":
+		return "IPv4"
+	default:
+		return version
+	}
+}
+
+func externalIPSyncRunSummaryFromRunLog(run service.RunLog) map[string]interface{} {
+	targetType := strings.TrimSpace(run.TargetType)
+	if targetType != "" && targetType != "external_ip_sync" {
+		return nil
+	}
+	summary := service.ExternalIPSyncExecutionSummary{
+		Status:       strings.TrimSpace(run.Status),
+		ErrorMessage: strings.TrimSpace(run.ErrorMessage),
+	}
+	raw := strings.TrimSpace(run.ResultJSON)
+	if raw != "" && raw != "null" {
+		_ = json.Unmarshal([]byte(raw), &summary)
+	}
+	return map[string]interface{}{
+		"task_id":        summary.TaskID,
+		"resource_id":    summary.ResourceID,
+		"ip_version":     summary.IPVersion,
+		"source_total":   summary.SourceTotal,
+		"filtered_total": summary.FilteredTotal,
+		"existing_total": summary.ExistingTotal,
+		"to_add_total":   summary.ToAddTotal,
+		"added_total":    summary.AddedTotal,
+		"write_api_path": firstNonEmptyString(summary.WriteAPIPath, "/api/open/v1/addr/management/add"),
+		"dry_run":        summary.DryRun,
+		"status":         firstNonEmptyString(summary.Status, strings.TrimSpace(run.Status)),
+		"error_message":  firstNonEmptyString(summary.ErrorMessage, strings.TrimSpace(run.ErrorMessage)),
+	}
+}
+
+func mergeStringAnyMap(base map[string]interface{}, overrides map[string]interface{}) map[string]interface{} {
+	out := cloneMapAny(base)
+	for k, v := range overrides {
+		out[k] = v
+	}
+	return out
 }
 
 func connectionSummary(cfg *config.Config) map[string]interface{} {
@@ -1678,13 +2150,13 @@ func tokenRequestPreview(ss config.SealSuiteConfig, source string) map[string]in
 		}
 	}
 	return map[string]interface{}{
-		"token_url":        fmt.Sprintf("%s%s", baseURL, "/api/open/v1/token"),
-		"content_type":     "application/json;charset=utf-8",
-		"body_keys":        []string{"access_key_id", "access_key_secret"},
+		"token_url":         fmt.Sprintf("%s%s", baseURL, "/api/open/v1/token"),
+		"content_type":      "application/json;charset=utf-8",
+		"body_keys":         []string{"access_key_id", "access_key_secret"},
 		"access_key_masked": mask(ss.AccessKey),
-		"access_key_len":   len(strings.TrimSpace(ss.AccessKey)),
-		"secret_key_len":   len(strings.TrimSpace(ss.SecretKey)),
-		"source":           source,
+		"access_key_len":    len(strings.TrimSpace(ss.AccessKey)),
+		"secret_key_len":    len(strings.TrimSpace(ss.SecretKey)),
+		"source":            source,
 	}
 }
 
@@ -2035,6 +2507,87 @@ func normalizeHTTPRequestMethod(method string) string {
 	return method
 }
 
+func loadConnectionsFromRepo(repo *sqliteRepo.ConnectionsRepository) (*storage.ConnectionsFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("connections repository is nil")
+	}
+	return repo.Load()
+}
+
+func loadLLMAPIsFromRepo(repo *sqliteRepo.LLMAPIRepository) (*storage.LLMAPIFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("llm api repository is nil")
+	}
+	return repo.Load()
+}
+
+func loadWebhooksFromRepo(repo *sqliteRepo.WebhookRepository) (*storage.WebhookFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("webhook repository is nil")
+	}
+	return repo.Load()
+}
+
+func loadTemplatesFromRepo(repo *sqliteRepo.TemplateRepository) (*storage.TemplatesFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("template repository is nil")
+	}
+	return repo.Load()
+}
+
+func loadOutputTemplatesFromRepo(repo *sqliteRepo.OutputTemplateRepository) (*storage.OutputTemplatesFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("output template repository is nil")
+	}
+	return repo.Load()
+}
+
+func loadComplexTasksFromRepo(repo *sqliteRepo.ComplexTaskRepository) (*storage.ComplexTasksFile, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("complex task repository is nil")
+	}
+	items, err := repo.List()
+	if err != nil {
+		return nil, err
+	}
+	return &storage.ComplexTasksFile{Version: 1, Items: items}, nil
+}
+
+func getConnectionFromRepo(repo *sqliteRepo.ConnectionsRepository, id string) (*storage.ConnectionItem, bool, error) {
+	if repo == nil {
+		return nil, false, fmt.Errorf("connections repository is nil")
+	}
+	return repo.Get(id)
+}
+
+func getTemplateFromRepo(repo *sqliteRepo.TemplateRepository, id string) (*storage.Template, bool, error) {
+	if repo == nil {
+		return nil, false, fmt.Errorf("template repository is nil")
+	}
+	return repo.Get(id)
+}
+
+func getOutputTemplateFromRepo(repo *sqliteRepo.OutputTemplateRepository, id string) (*storage.OutputTemplate, bool, error) {
+	if repo == nil {
+		return nil, false, fmt.Errorf("output template repository is nil")
+	}
+	return repo.Get(id)
+}
+
+func getComplexTaskFromRepo(repo *sqliteRepo.ComplexTaskRepository, id string) (storage.ComplexTask, bool, error) {
+	if repo == nil {
+		return storage.ComplexTask{}, false, fmt.Errorf("complex task repository is nil")
+	}
+	return repo.Get(id)
+}
+
+func getWebhookFromRepo(repo *sqliteRepo.WebhookRepository, id string) (*storage.WebhookItem, bool, error) {
+	if repo == nil {
+		return nil, false, fmt.Errorf("webhook repository is nil")
+	}
+	return repo.Get(id)
+}
+
 func hasHeaderInsensitive(headers map[string]string, target string) bool {
 	for key := range headers {
 		if strings.EqualFold(key, target) {
@@ -2070,7 +2623,7 @@ func logWebhookDelivery(sourceType, sourceID string, delivery webhook.DeliveryRe
 		sourceType, sourceID, delivery.Attempted, delivery.OK, delivery.StatusCode, delivery.Error)
 }
 
-func deliverWebhookFromConfig(ctx context.Context, store *storage.WebhookStore, enabled bool, webhookID string, env webhook.Envelope) webhook.DeliveryResult {
+func deliverWebhookFromConfig(ctx context.Context, repo *sqliteRepo.WebhookRepository, enabled bool, webhookID string, env webhook.Envelope) webhook.DeliveryResult {
 	webhookID, enabled = normalizeWebhookReference(webhookID, enabled)
 	if ctx == nil {
 		ctx = context.Background()
@@ -2078,10 +2631,10 @@ func deliverWebhookFromConfig(ctx context.Context, store *storage.WebhookStore, 
 	delivery := webhook.DeliveryResult{Attempted: false}
 	switch {
 	case !enabled || webhookID == "":
-	case store == nil:
-		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook store is nil"}
+	case repo == nil:
+		delivery = webhook.DeliveryResult{Attempted: false, Error: "webhook repository is nil"}
 	default:
-		item, ok, err := store.Get(webhookID)
+		item, ok, err := getWebhookFromRepo(repo, webhookID)
 		switch {
 		case err != nil:
 			delivery = webhook.DeliveryResult{Attempted: false, Error: err.Error()}
@@ -2140,16 +2693,10 @@ func normalizeScheduleTarget(s *storage.JobSchedule) {
 	if s == nil {
 		return
 	}
-	if s.TargetType == "" && s.DraftID != "" {
-		s.TargetType = "task_draft"
-		s.TargetID = s.DraftID
-	}
-	if s.DraftID == "" && s.TargetType == "task_draft" {
-		s.DraftID = s.TargetID
-	}
+	storage.NormalizeJobScheduleDefaults(s)
 }
 
-func validateScheduleTarget(s storage.JobSchedule, drafts storage.TaskDraftsStore, tasks storage.ComplexTasksStore) error {
+func validateScheduleTarget(s storage.JobSchedule, drafts repository.TaskDraftRepository, tasks repository.ComplexTaskRepository, externalTasks repository.ExternalIPSyncTaskRepository) error {
 	if s.TargetType == "" || s.TargetID == "" {
 		return fmt.Errorf("target_type/target_id required")
 	}
@@ -2166,36 +2713,35 @@ func validateScheduleTarget(s storage.JobSchedule, drafts storage.TaskDraftsStor
 		} else if !ok {
 			return fmt.Errorf("complex task not found")
 		}
+	case "external_ip_sync":
+		if externalTasks == nil {
+			return fmt.Errorf("external ip sync task repository is nil")
+		}
+		if _, ok, err := externalTasks.Get(s.TargetID); err != nil {
+			return err
+		} else if !ok {
+			return fmt.Errorf("external ip sync task not found")
+		}
 	default:
 		return fmt.Errorf("unsupported target_type: %s", s.TargetType)
 	}
 	return nil
 }
 
-func referencedJobsByTemplate(store storage.JobsStore, templateID string) ([]string, error) {
-	jf, err := store.Load()
-	if err != nil {
-		return nil, err
+func referencedLegacyJobsByTemplate(repo repository.LegacyJobRepository, templateID string) ([]string, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("legacy job repository is nil")
 	}
-	var refs []string
-	for _, j := range jf.Jobs {
-		if j.Params == nil {
-			continue
-		}
-		if tid, ok := j.Params["template_id"].(string); ok && tid == templateID {
-			refs = append(refs, j.Name)
-		}
-	}
-	return refs, nil
+	return repo.ReferencedByTemplate(templateID)
 }
 
-func referencedSchedulesByDraft(store storage.JobSchedulesStore, draftID string) ([]string, error) {
-	jf, err := store.Load()
+func referencedSchedulesByDraft(store repository.ScheduleRepository, draftID string) ([]string, error) {
+	items, err := store.List()
 	if err != nil {
 		return nil, err
 	}
 	var refs []string
-	for _, item := range jf.Items {
+	for _, item := range items {
 		if item.TargetType == "task_draft" && item.TargetID == draftID {
 			refs = append(refs, item.ID)
 			continue
@@ -2205,6 +2751,227 @@ func referencedSchedulesByDraft(store storage.JobSchedulesStore, draftID string)
 		}
 	}
 	return refs, nil
+}
+
+func referencedSchedulesByTarget(store repository.ScheduleRepository, targetType, targetID, excludeID string) ([]string, error) {
+	items, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	targetType = strings.TrimSpace(targetType)
+	targetID = strings.TrimSpace(targetID)
+	excludeID = strings.TrimSpace(excludeID)
+	var refs []string
+	for _, item := range items {
+		if excludeID != "" && strings.TrimSpace(item.ID) == excludeID {
+			continue
+		}
+		normalizedType, normalizedID := normalizeTarget(item.TargetType, item.TargetID, item.DraftID)
+		if strings.TrimSpace(normalizedType) == targetType && strings.TrimSpace(normalizedID) == targetID {
+			refs = append(refs, item.ID)
+		}
+	}
+	return refs, nil
+}
+
+func loadExternalIPSyncResourceItems(cfg *config.Config, store storage.ConfigStore, loadTemplates func() (*storage.TemplatesFile, error)) ([]map[string]interface{}, string, error) {
+	sealSuiteCfg := currentSealSuiteConfig(cfg, store)
+	client := sealsuite.NewClient(&sealSuiteCfg)
+	client.SetMockMode(false)
+
+	if loadTemplates != nil {
+		if tf, err := loadTemplates(); err == nil {
+			if templateID, templates := selectExternalIPSyncResourceTemplate(tf); templateID != "" {
+				exec := api.NewExecutor(client, templates)
+				out, err := exec.Execute(api.ExecuteRequest{TemplateID: templateID})
+				if err == nil && out != nil {
+					items, decodeErr := decodeExternalIPSyncResourceItems(out.Body)
+					if decodeErr == nil && len(items) > 0 {
+						return items, "template:" + templateID, nil
+					}
+					if decodeErr != nil {
+						return nil, "", decodeErr
+					}
+				}
+			}
+		}
+	}
+
+	var lastErr error
+	for _, candidate := range []string{
+		"/api/open/v1/addr/management/list",
+		"/api/open/v1/addr/management/page",
+	} {
+		_, body, err := client.DoRaw(http.MethodGet, candidate, nil, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		items, err := decodeExternalIPSyncResourceItems(body)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(items) > 0 {
+			return items, "feilian_api:" + candidate, nil
+		}
+		lastErr = fmt.Errorf("external ip sync resources: empty response from %s", candidate)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("external ip sync resources: no available source")
+	}
+	return nil, "", lastErr
+}
+
+func currentSealSuiteConfig(cfg *config.Config, store storage.ConfigStore) config.SealSuiteConfig {
+	if cfg == nil {
+		return config.SealSuiteConfig{}
+	}
+	out := cfg.SealSuite
+	ss, err := store.GetSealsuiteConnection()
+	if err != nil {
+		return out
+	}
+	if v := firstNonEmptyString(ss["base_url"], ""); v != "" {
+		out.BaseURL = v
+	}
+	if v := firstNonEmptyString(ss["scheme"], ""); v != "" {
+		out.Scheme = v
+	}
+	if v := firstNonEmptyString(ss["host"], ""); v != "" {
+		out.Host = v
+	}
+	if v := intFromAny(ss["port"]); v > 0 {
+		out.Port = v
+	}
+	if v := firstNonEmptyString(ss["access_key"], ""); v != "" {
+		out.AccessKey = v
+	}
+	if v := firstNonEmptyString(ss["secret_key"], ""); v != "" {
+		out.SecretKey = v
+	}
+	return out
+}
+
+func selectExternalIPSyncResourceTemplate(tf *storage.TemplatesFile) (string, map[string]storage.Template) {
+	if tf == nil {
+		return "", nil
+	}
+	templates := make(map[string]storage.Template, len(tf.Templates))
+	for _, item := range tf.Templates {
+		templates[item.ID] = item
+	}
+	for _, candidatePath := range []string{
+		"/api/open/v1/addr/management/list",
+		"/api/open/v1/addr/management/page",
+	} {
+		for _, item := range tf.Templates {
+			if strings.EqualFold(strings.TrimSpace(item.Method), http.MethodGet) && strings.TrimSpace(item.Path) == candidatePath {
+				return item.ID, templates
+			}
+		}
+	}
+	return "", templates
+}
+
+func decodeExternalIPSyncResourceItems(raw []byte) ([]map[string]interface{}, error) {
+	var payload interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("decode external ip sync resources response: %w", err)
+	}
+	return collectExternalIPSyncResourceItems(payload), nil
+}
+
+func collectExternalIPSyncResourceItems(payload interface{}) []map[string]interface{} {
+	seen := map[string]map[string]interface{}{}
+	var walk func(v interface{})
+	walk = func(v interface{}) {
+		switch vv := v.(type) {
+		case map[string]interface{}:
+			if item, ok := normalizeExternalIPSyncResourceItem(vv); ok {
+				seen[item["resource_id"].(string)] = item
+			}
+			for _, child := range vv {
+				walk(child)
+			}
+		case []interface{}:
+			for _, child := range vv {
+				walk(child)
+			}
+		}
+	}
+	walk(payload)
+	out := make([]map[string]interface{}, 0, len(seen))
+	for _, item := range seen {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return firstNonEmptyString(out[i]["label"], firstNonEmptyString(out[i]["resource_id"], "")) <
+			firstNonEmptyString(out[j]["label"], firstNonEmptyString(out[j]["resource_id"], ""))
+	})
+	return out
+}
+
+func normalizeExternalIPSyncResourceItem(item map[string]interface{}) (map[string]interface{}, bool) {
+	if item == nil {
+		return nil, false
+	}
+	resourceID := strings.TrimSpace(firstNonEmptyString(item["resource_id"],
+		firstNonEmptyString(item["id"], firstNonEmptyString(item["value"], ""))))
+	if resourceID == "" {
+		return nil, false
+	}
+	name := strings.TrimSpace(firstNonEmptyString(item["resource_name_snapshot"],
+		firstNonEmptyString(item["resource_name"],
+			firstNonEmptyString(item["name"], firstNonEmptyString(item["label"], "")))))
+	label := resourceID
+	if name != "" {
+		label = fmt.Sprintf("%s · %s", name, resourceID)
+	}
+	return map[string]interface{}{
+		"id":                     resourceID,
+		"value":                  resourceID,
+		"resource_id":            resourceID,
+		"name":                   name,
+		"label":                  label,
+		"resource_name_snapshot": name,
+	}, true
+}
+
+func externalIPSyncResourceItemsFromTasks(tasks []storage.ExternalIPSyncTask) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0, len(tasks))
+	for _, task := range tasks {
+		if item, ok := normalizeExternalIPSyncResourceItem(map[string]interface{}{
+			"resource_id":            task.ResourceID,
+			"resource_name_snapshot": task.ResourceNameSnapshot,
+		}); ok {
+			items = append(items, item)
+		}
+	}
+	return mergeExternalIPSyncResourceItems(nil, items)
+}
+
+func mergeExternalIPSyncResourceItems(base, overrides []map[string]interface{}) []map[string]interface{} {
+	seen := map[string]map[string]interface{}{}
+	for _, item := range base {
+		if normalized, ok := normalizeExternalIPSyncResourceItem(item); ok {
+			seen[normalized["resource_id"].(string)] = normalized
+		}
+	}
+	for _, item := range overrides {
+		if normalized, ok := normalizeExternalIPSyncResourceItem(item); ok {
+			seen[normalized["resource_id"].(string)] = normalized
+		}
+	}
+	out := make([]map[string]interface{}, 0, len(seen))
+	for _, item := range seen {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return firstNonEmptyString(out[i]["label"], firstNonEmptyString(out[i]["resource_id"], "")) <
+			firstNonEmptyString(out[j]["label"], firstNonEmptyString(out[j]["resource_id"], ""))
+	})
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
