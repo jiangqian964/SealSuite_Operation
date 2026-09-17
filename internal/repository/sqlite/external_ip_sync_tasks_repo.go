@@ -23,7 +23,8 @@ func (r *ExternalIPSyncTaskRepository) List() ([]storage.ExternalIPSyncTask, err
 	rows, err := r.db.Query(`
 		SELECT
 			id, name, source_type, source_url, ip_version,
-			resource_id, resource_name_snapshot, write_action, feilian_api_path,
+			resource_id, resource_tag_names, create_mode, new_resource_name,
+			write_action, feilian_api_path,
 			dry_run, skip_when_empty, enabled, created_at, updated_at
 		FROM external_ip_sync_tasks
 		ORDER BY created_at ASC, id ASC
@@ -51,7 +52,8 @@ func (r *ExternalIPSyncTaskRepository) Get(id string) (storage.ExternalIPSyncTas
 	row := r.db.QueryRow(`
 		SELECT
 			id, name, source_type, source_url, ip_version,
-			resource_id, resource_name_snapshot, write_action, feilian_api_path,
+			resource_id, resource_tag_names, create_mode, new_resource_name,
+			write_action, feilian_api_path,
 			dry_run, skip_when_empty, enabled, created_at, updated_at
 		FROM external_ip_sync_tasks
 		WHERE id = ?
@@ -77,16 +79,19 @@ func (r *ExternalIPSyncTaskRepository) Upsert(task storage.ExternalIPSyncTask) e
 	_, err := r.db.Exec(`
 		INSERT INTO external_ip_sync_tasks (
 			id, name, source_type, source_url, ip_version,
-			resource_id, resource_name_snapshot, write_action, feilian_api_path,
+			resource_id, resource_tag_names, create_mode, new_resource_name,
+			write_action, feilian_api_path,
 			dry_run, skip_when_empty, enabled, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			source_type = excluded.source_type,
 			source_url = excluded.source_url,
 			ip_version = excluded.ip_version,
 			resource_id = excluded.resource_id,
-			resource_name_snapshot = excluded.resource_name_snapshot,
+			resource_tag_names = excluded.resource_tag_names,
+			create_mode = excluded.create_mode,
+			new_resource_name = excluded.new_resource_name,
 			write_action = excluded.write_action,
 			feilian_api_path = excluded.feilian_api_path,
 			dry_run = excluded.dry_run,
@@ -94,7 +99,8 @@ func (r *ExternalIPSyncTaskRepository) Upsert(task storage.ExternalIPSyncTask) e
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at
 	`, task.ID, task.Name, task.SourceType, task.SourceURL, task.IPVersion,
-		task.ResourceID, task.ResourceNameSnapshot, task.WriteAction, task.FeilianAPIPath,
+		task.ResourceID, task.ResourceTagNames, task.CreateMode, task.NewResourceName,
+		task.WriteAction, task.FeilianAPIPath,
 		boolToInt(task.DryRun), boolToInt(task.SkipWhenEmpty), boolToInt(task.Enabled), now, now)
 	return err
 }
@@ -119,7 +125,9 @@ func scanExternalIPSyncTask(s scanner) (storage.ExternalIPSyncTask, error) {
 		&item.SourceURL,
 		&item.IPVersion,
 		&item.ResourceID,
-		&item.ResourceNameSnapshot,
+		&item.ResourceTagNames,
+		&item.CreateMode,
+		&item.NewResourceName,
 		&item.WriteAction,
 		&item.FeilianAPIPath,
 		&dryRun,

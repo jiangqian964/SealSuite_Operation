@@ -6,8 +6,8 @@ type ExecuteRequest struct {
 	TemplateID      string                 `json:"template_id,omitempty"`
 	Method          string                 `json:"method,omitempty"`
 	Path            string                 `json:"path,omitempty"`
-	Query           map[string]string      `json:"query,omitempty"`
-	PathParams      map[string]string      `json:"path_params,omitempty"`
+	Query           map[string]interface{} `json:"query,omitempty"`
+	PathParams      map[string]interface{} `json:"path_params,omitempty"`
 	Body            map[string]interface{} `json:"body,omitempty"`
 	Mode            string                 `json:"mode,omitempty"`
 	TransformConfig map[string]interface{} `json:"transform_config,omitempty"`

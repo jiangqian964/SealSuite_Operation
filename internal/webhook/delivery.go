@@ -31,6 +31,7 @@ type Envelope struct {
 }
 
 // DeliverWebhookForSuccess returns a structured result that callers can expose as webhook_delivery.
+// 支持重试机制：根据 item.RetryCount 配置进行多次投递尝试，使用指数退避策略。
 func DeliverWebhookForSuccess(ctx context.Context, item *storage.WebhookItem, env Envelope) DeliveryResult {
 	if item == nil || !item.Enabled || item.URL == "" {
 		return DeliveryResult{Attempted: false}
@@ -46,34 +47,62 @@ func DeliverWebhookForSuccess(ctx context.Context, item *storage.WebhookItem, en
 		method = http.MethodPost
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, item.URL, bytes.NewReader(body))
-	if err != nil {
-		return DeliveryResult{Attempted: true, Error: err.Error()}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range item.Headers {
-		req.Header.Set(k, v)
-	}
-
 	timeout := 10 * time.Second
 	if item.TimeoutSec > 0 {
 		timeout = time.Duration(item.TimeoutSec) * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
+	clt := &http.Client{Timeout: timeout}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return DeliveryResult{Attempted: true, Error: err.Error()}
+	maxAttempts := 1
+	if item.RetryCount > 0 {
+		maxAttempts = item.RetryCount + 1
 	}
-	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
-	return DeliveryResult{
-		Attempted:    true,
-		OK:           resp.StatusCode >= 200 && resp.StatusCode < 300,
-		StatusCode:   resp.StatusCode,
-		ResponseBody: string(respBody),
+	var lastResult DeliveryResult
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				return lastResult
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, item.URL, bytes.NewReader(body))
+		if err != nil {
+			lastResult = DeliveryResult{Attempted: true, Error: err.Error()}
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range item.Headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := clt.Do(req)
+		if err != nil {
+			lastResult = DeliveryResult{Attempted: true, Error: err.Error()}
+			continue
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		lastResult = DeliveryResult{
+			Attempted:    true,
+			OK:           resp.StatusCode >= 200 && resp.StatusCode < 300,
+			StatusCode:   resp.StatusCode,
+			ResponseBody: string(respBody),
+		}
+
+		if lastResult.OK {
+			return lastResult
+		}
 	}
+
+	return lastResult
 }
 
 func BuildRequestBodyForDelivery(item *storage.WebhookItem, env Envelope) ([]byte, error) {

@@ -14,3 +14,11 @@ job-schedules.yaml
 job-runs.json
 .env
 .env.*
+
+# 编译产物（根目录输出的二进制）
+/sealsuite
+/sealsuite-operation
+/sealsuite-ops
+
+# dogfood / QA 报告产物
+dogfood-output/

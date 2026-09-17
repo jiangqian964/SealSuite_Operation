@@ -108,53 +108,107 @@ func openTestSQLiteDB(t *testing.T, cfg *config.Config, dir string) *sql.DB {
 
 func TestConnectionTestReturnsTokenFields(t *testing.T) {
 	// Contract test: /connection/test should explicitly tell whether token is valid.
-	feilian := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/open/v1/token" && r.Method == http.MethodPost {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"access_token":"T","expires_in":7200}}`))
-			return
-		}
-		if r.URL.Path == "/api/v1/users" && r.Method == http.MethodGet {
-			if r.Header.Get("Authorization") != "T" {
-				http.Error(w, "missing token", http.StatusUnauthorized)
-				return
+	// Probe 判定逻辑：
+	//  · HTTP 2xx 且含 code 字段 → probe_ok = true（code 非 0 只表示业务参数错误，不代表 token 或网络不通）
+	//  · HTTP 401/403/5xx → probe_ok = false（token 失效或服务不可用）
+	//  · 网络错误 / DNS 失败 → probe_ok = false
+	cases := []struct {
+		name              string
+		probeHandler      http.HandlerFunc
+		wantTokenOK       bool
+		wantProbeOK       bool
+		wantProbeErrorSet bool
+	}{
+		{
+			name: "token_ok_probe_ok_code_0",
+			probeHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"items":[]}}`))
+			},
+			wantTokenOK:       true,
+			wantProbeOK:       true,
+			wantProbeErrorSet: false,
+		},
+		{
+			name: "token_ok_probe_ok_code_40000",
+			probeHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				// 业务参数错误（常见现象：列表接口需要 page/page_size），但 token 有效
+				_, _ = w.Write([]byte(`{"code":40000,"action":"alert","message":"参数错误"}`))
+			},
+			wantTokenOK:       true,
+			wantProbeOK:       true,
+			wantProbeErrorSet: false,
+		},
+		{
+			name: "token_ok_probe_fail_http_401",
+			probeHandler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, `{"code":401,"message":"unauthorized"}`, http.StatusUnauthorized)
+			},
+			wantTokenOK:       true,
+			wantProbeOK:       false,
+			wantProbeErrorSet: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			feilian := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/open/v1/token" && r.Method == http.MethodPost {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"access_token":"T","expires_in":7200}}`))
+					return
+				}
+				if r.URL.Path == "/api/open/v1/addr/management/list" && r.Method == http.MethodGet {
+					tc.probeHandler(w, r)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer feilian.Close()
+
+			cfg := &config.Config{
+				Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
+				Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
+				SealSuite: config.SealSuiteConfig{BaseURL: feilian.URL, AccessKey: "ak", SecretKey: "sk", Timeout: 1},
+				Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{}}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer feilian.Close()
+			client := sealsuite.NewClient(&cfg.SealSuite)
+			r := runner.New(cfg, client)
+			h, err := NewRouter(cfg, r)
+			if err != nil {
+				t.Fatalf("NewRouter err=%v", err)
+			}
 
-	cfg := &config.Config{
-		Server:    config.ServerConfig{Bind: "127.0.0.1", Port: 0, Mode: "debug"},
-		Scheduler: config.SchedulerConfig{Enabled: false, Timezone: "Asia/Shanghai"},
-		SealSuite: config.SealSuiteConfig{BaseURL: feilian.URL, AccessKey: "ak", SecretKey: "sk", Timeout: 1},
-		Log:       config.LogConfig{Level: "debug", Filename: "./logs/app.log"},
-	}
-	client := sealsuite.NewClient(&cfg.SealSuite)
-	r := runner.New(cfg, client)
-	h, err := NewRouter(cfg, r)
-	if err != nil {
-		t.Fatalf("NewRouter err=%v", err)
-	}
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/connection/test", strings.NewReader(`{"base_url":"`+feilian.URL+`","access_key":"ak","secret_key":"sk"}`))
+			req.Header.Set("Content-Type", "application/json")
+			h.ServeHTTP(rr, req)
 
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/connection/test", strings.NewReader(`{"base_url":"`+feilian.URL+`","access_key":"ak","secret_key":"sk"}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+			}
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
-
-	var out map[string]interface{}
-	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
-		t.Fatalf("invalid json: %v body=%s", err, rr.Body.String())
-	}
-	if _, ok := out["token_ok"]; !ok {
-		t.Fatalf("expected token_ok in response, got=%v", out)
+			var out map[string]interface{}
+			if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+				t.Fatalf("invalid json: %v body=%s", err, rr.Body.String())
+			}
+			if _, ok := out["token_ok"]; !ok {
+				t.Fatalf("expected token_ok in response, got=%v", out)
+			}
+			if got, _ := out["token_ok"].(bool); got != tc.wantTokenOK {
+				t.Fatalf("token_ok=%v, want %v", got, tc.wantTokenOK)
+			}
+			if got, _ := out["probe_ok"].(bool); got != tc.wantProbeOK {
+				t.Fatalf("probe_ok=%v, want %v. resp=%v", got, tc.wantProbeOK, out)
+			}
+			probeErr, _ := out["probe_error"].(string)
+			hasProbeErr := probeErr != ""
+			if hasProbeErr != tc.wantProbeErrorSet {
+				t.Fatalf("probe_error set=%v (value=%q), want set=%v", hasProbeErr, probeErr, tc.wantProbeErrorSet)
+			}
+		})
 	}
 }
 

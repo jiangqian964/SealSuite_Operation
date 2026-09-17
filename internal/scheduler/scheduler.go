@@ -5,6 +5,7 @@ package scheduler
 import (
 	// 项目内部包
 	"sealsuite-operation/internal/logger" // 日志系统
+	"sync"
 	"time"
 
 	// 第三方库
@@ -21,6 +22,7 @@ type JobFunc func() error
 type Scheduler struct {
 	cron *cron.Cron              // cron 调度器实例
 	jobs map[string]cron.EntryID // 任务名称到任务 ID 的映射
+	mu   sync.RWMutex            // 保护 jobs map 的读写锁
 }
 
 // New 创建一个新的调度器实例
@@ -76,7 +78,9 @@ func (s *Scheduler) AddJob(name string, spec string, job JobFunc) error {
 	}
 
 	// 保存任务名称和 ID 的映射关系
+	s.mu.Lock()
 	s.jobs[name] = id
+	s.mu.Unlock()
 	logger.Info("job added", zap.String("job_name", name), zap.String("cron_spec", spec))
 	return nil
 }
@@ -88,6 +92,8 @@ func (s *Scheduler) Entries() []cron.Entry {
 
 // EntryID 返回任务名称对应的 cron EntryID（用于查询 next/prev）。
 func (s *Scheduler) EntryID(name string) (cron.EntryID, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	id, ok := s.jobs[name]
 	return id, ok
 }
@@ -97,6 +103,8 @@ func (s *Scheduler) EntryID(name string) (cron.EntryID, bool) {
 //
 //	name - 要删除的任务名称
 func (s *Scheduler) RemoveJob(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// 查找任务 ID
 	if id, ok := s.jobs[name]; ok {
 		// 从 cron 调度器中移除任务

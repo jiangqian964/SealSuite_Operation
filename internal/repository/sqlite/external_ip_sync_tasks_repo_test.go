@@ -21,17 +21,17 @@ func TestExternalIPSyncTaskRepositoryUpsertAndGet(t *testing.T) {
 
 	repo := NewExternalIPSyncTaskRepository(db)
 	task := storage.ExternalIPSyncTask{
-		ID:                   "google_ipv4_sync",
-		Name:                 "Google IPv4 同步",
-		SourceType:           "google_ip_ranges",
-		SourceURL:            "https://www.gstatic.com/ipranges/goog.json",
-		IPVersion:            "ipv4",
-		ResourceID:           "res_google",
-		ResourceNameSnapshot: "Google Resource",
-		WriteAction:          "append_if_missing",
-		FeilianAPIPath:       "/api/open/v1/addr/management/add",
-		SkipWhenEmpty:        true,
-		Enabled:              true,
+		ID:               "google_ipv4_sync",
+		Name:             "Google IPv4 同步",
+		SourceType:       "google_ip_ranges",
+		SourceURL:        "https://www.gstatic.com/ipranges/goog.json",
+		IPVersion:        "ipv4",
+		ResourceID:       "res_google",
+		ResourceTagNames: "办公网,研发部",
+		WriteAction:      "append_if_missing",
+		FeilianAPIPath:   "/api/open/v1/addr/management/add",
+		SkipWhenEmpty:    true,
+		Enabled:          true,
 	}
 	if err := repo.Upsert(task); err != nil {
 		t.Fatalf("Upsert err=%v", err)
@@ -44,8 +44,8 @@ func TestExternalIPSyncTaskRepositoryUpsertAndGet(t *testing.T) {
 	if got.IPVersion != "ipv4" || got.ResourceID != "res_google" {
 		t.Fatalf("unexpected task: %+v", got)
 	}
-	if got.ResourceNameSnapshot != "Google Resource" || !got.SkipWhenEmpty || !got.Enabled {
-		t.Fatalf("unexpected flags or snapshot: %+v", got)
+	if got.ResourceTagNames != "办公网,研发部" || !got.SkipWhenEmpty || !got.Enabled {
+		t.Fatalf("unexpected flags or tag names: %+v", got)
 	}
 
 	items, err := repo.List()

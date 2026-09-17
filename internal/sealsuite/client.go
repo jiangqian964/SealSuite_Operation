@@ -56,12 +56,15 @@ type CommonResponse struct {
 func NewClient(cfg *config.SealSuiteConfig) *Client {
 	baseURL := strings.TrimSpace(cfg.BaseURL)
 	// 优先使用结构化字段组装 base_url（若提供）
+	// 注意：默认端口（https=443, http=80）必须省略，否则 Host header 会带 ":443"/":80"，
+	// 部分 API 网关对 Host header 做严格匹配，会返回 code=40000 参数错误
 	if cfg.Host != "" {
 		scheme := cfg.Scheme
 		if scheme == "" {
 			scheme = "https"
 		}
-		if cfg.Port > 0 {
+		isDefaultPort := (scheme == "https" && cfg.Port == 443) || (scheme == "http" && cfg.Port == 80)
+		if cfg.Port > 0 && !isDefaultPort {
 			baseURL = fmt.Sprintf("%s://%s:%d", scheme, cfg.Host, cfg.Port)
 		} else {
 			baseURL = fmt.Sprintf("%s://%s", scheme, cfg.Host)
@@ -229,25 +232,60 @@ func (c *Client) FetchAccessToken() (token string, expiresIn int, err error) {
 // DoRaw 执行 HTTP 请求并返回原始响应内容（不做业务 code 校验）。
 // 该方法用于“API 工具箱/调试器”与预览能力：即使业务 code != 0，也需要把响应返回给上层展示。
 func (c *Client) DoRaw(method, path string, query map[string]string, body interface{}) (int, []byte, error) {
+	startTime := time.Now()
+	requestID := fmt.Sprintf("req_%d", startTime.UnixNano())
+
 	// ---------------------------
 	// 1. 模拟模式处理
 	// ---------------------------
 	if c.mockMode {
-		logger.Info("returning mock raw response", zap.String("method", method), zap.String("path", path))
+		logger.Info("[API] mock request",
+			zap.String("request_id", requestID),
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.Int("query_params", len(query)),
+		)
 		b, _ := json.Marshal(c.getMockResponse(path))
+		logger.Info("[API] mock response",
+			zap.String("request_id", requestID),
+			zap.String("path", path),
+			zap.Int("response_size", len(b)),
+			zap.Duration("duration", time.Since(startTime)),
+		)
 		return http.StatusOK, b, nil
 	}
 
 	// ---------------------------
-	// 2. 准备请求体
+	// 2. 准备请求体 & 判断该请求是否真的需要 body
 	// ---------------------------
-	var reqBody io.Reader
-	if body != nil {
-		jsonBody, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to marshal request body: %w", err)
+	// HTTP 规范：GET/HEAD/DELETE/OPTIONS 不应带请求体；即使调用者传入 body，也忽略。
+	// 同时，空对象 map[string]interface{}{}（json.Marshal 为 "{}"）也当作无 body 处理，
+	// 避免飞连 API 网关解析空 body 导致 code=40000。
+	upperMethod := strings.ToUpper(method)
+	hasRequestBody := false
+	var jsonBodyBytes []byte
+	if upperMethod != "GET" && upperMethod != "HEAD" && upperMethod != "DELETE" && upperMethod != "OPTIONS" {
+		if body != nil {
+			b, err := json.Marshal(body)
+			if err != nil {
+				logger.Error("[API] marshal request body failed",
+					zap.String("request_id", requestID),
+					zap.String("method", method),
+					zap.String("path", path),
+					zap.Error(err),
+				)
+				return 0, nil, fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			// 只有非空（不是"{}"）才作为 body 发送
+			if len(b) > 0 && !(len(b) == 2 && b[0] == '{' && b[1] == '}') {
+				jsonBodyBytes = b
+				hasRequestBody = true
+			}
 		}
-		reqBody = bytes.NewReader(jsonBody)
+	}
+	var reqBody io.Reader
+	if hasRequestBody {
+		reqBody = bytes.NewReader(jsonBodyBytes)
 	}
 
 	// ---------------------------
@@ -256,6 +294,11 @@ func (c *Client) DoRaw(method, path string, query map[string]string, body interf
 	rawURL := fmt.Sprintf("%s%s", c.baseURL, path)
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		logger.Error("[API] parse URL failed",
+			zap.String("request_id", requestID),
+			zap.String("path", path),
+			zap.Error(err),
+		)
 		return 0, nil, fmt.Errorf("failed to parse url: %w", err)
 	}
 	if len(query) > 0 {
@@ -271,31 +314,65 @@ func (c *Client) DoRaw(method, path string, query map[string]string, body interf
 	// ---------------------------
 	req, err := http.NewRequest(method, u.String(), reqBody)
 	if err != nil {
+		logger.Error("[API] create request failed",
+			zap.String("request_id", requestID),
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.Error(err),
+		)
 		return 0, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// ---------------------------
 	// 5. 设置请求头
 	// ---------------------------
-	req.Header.Set("Content-Type", "application/json")
+	// 飞连 OpenAPI 要求所有请求都必须设置 Content-Type: application/json;charset=utf-8
+	// 即使是 GET 请求也需要，否则会返回 code=40000 "参数错误"
+	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 
 	// 根据飞连 OpenAPI 文档：业务 API 需要在 Header 中携带 Authorization: <access_token>
 	// 获取 token 的接口本身不需要 Authorization，避免递归
+	hasToken := false
 	if path != "/api/open/v1/token" {
 		token, err := c.ensureAccessToken()
 		if err != nil {
+			logger.Error("[API] get access token failed",
+				zap.String("request_id", requestID),
+				zap.String("path", path),
+				zap.Error(err),
+			)
 			return 0, nil, err
 		}
 		req.Header.Set("Authorization", token)
+		hasToken = true
 	}
 
-	logger.Debug("making API request", zap.String("method", method), zap.String("url", u.String()))
+	logger.Info("[API] request start",
+		zap.String("request_id", requestID),
+		zap.String("method", upperMethod),
+		zap.String("path", path),
+		zap.Int("query_params", len(query)),
+		zap.Bool("has_body", hasRequestBody),
+		zap.Bool("has_token", hasToken),
+	)
+	logger.Debug("[API] request detail",
+		zap.String("request_id", requestID),
+		zap.String("path", path),
+		zap.Any("query", sanitizeQueryParams(query)),
+	)
 
 	// ---------------------------
 	// 6. 发送请求
 	// ---------------------------
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		logger.Error("[API] request failed",
+			zap.String("request_id", requestID),
+			zap.String("method", upperMethod),
+			zap.String("path", path),
+			zap.Duration("duration", time.Since(startTime)),
+			zap.Error(err),
+		)
 		return 0, nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -305,10 +382,116 @@ func (c *Client) DoRaw(method, path string, query map[string]string, body interf
 	// ---------------------------
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.Error("[API] read response failed",
+			zap.String("request_id", requestID),
+			zap.String("path", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.Duration("duration", time.Since(startTime)),
+			zap.Error(err),
+		)
 		return resp.StatusCode, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	logger.Debug("API response", zap.Int("status_code", resp.StatusCode), zap.String("body", string(respBody)))
+
+	// 记录响应结果
+	duration := time.Since(startTime)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		logger.Info("[API] request success",
+			zap.String("request_id", requestID),
+			zap.String("method", upperMethod),
+			zap.String("path", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.Int("response_size", len(respBody)),
+			zap.Duration("duration", duration),
+		)
+	} else {
+		logger.Warn("[API] request non-2xx status",
+			zap.String("request_id", requestID),
+			zap.String("method", upperMethod),
+			zap.String("path", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.Int("response_size", len(respBody)),
+			zap.Duration("duration", duration),
+		)
+	}
+
+	logger.Debug("[API] response body",
+		zap.String("request_id", requestID),
+		zap.String("path", path),
+		zap.String("body", truncateString(sanitizeJSONBody(string(respBody)), 2000)),
+	)
 	return resp.StatusCode, respBody, nil
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
+}
+
+var sensitiveParamKeys = map[string]bool{
+	"token":         true,
+	"access_token":  true,
+	"secret":        true,
+	"secret_key":    true,
+	"access_key":    true,
+	"access_key_id": true,
+	"password":      true,
+	"apikey":        true,
+	"api_key":       true,
+	"authorization": true,
+}
+
+func sanitizeQueryParams(query map[string]string) map[string]string {
+	if len(query) == 0 {
+		return query
+	}
+	result := make(map[string]string, len(query))
+	for k, v := range query {
+		lowerKey := strings.ToLower(k)
+		if sensitiveParamKeys[lowerKey] {
+			result[k] = maskSensitiveValue(v)
+		} else {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func maskSensitiveValue(s string) string {
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:2] + "****" + s[len(s)-2:]
+}
+
+func sanitizeJSONBody(body string) string {
+	if body == "" {
+		return body
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &data); err != nil {
+		return body
+	}
+	sanitizeMap(data)
+	result, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return string(result)
+}
+
+func sanitizeMap(m map[string]interface{}) {
+	for k, v := range m {
+		lowerKey := strings.ToLower(k)
+		if sensitiveParamKeys[lowerKey] {
+			if s, ok := v.(string); ok {
+				m[k] = maskSensitiveValue(s)
+			}
+		} else if nested, ok := v.(map[string]interface{}); ok {
+			sanitizeMap(nested)
+		}
+	}
 }
 
 // doRequest 执行通用的 HTTP 请求

@@ -13,6 +13,10 @@
         <small class="muted" id="version"></small>
       </div>
       <div class="top-actions">
+        <span class="badge dlp-summary-badge" id="dlp-summary-badge" title="DLP误报分析总览" style="display:none; cursor:pointer;" onclick="navigateToView('dlp-analysis')">
+          <span class="dot" style="background: var(--accent);"></span>
+          <span id="dlp-summary-text">DLP: 加载中</span>
+        </span>
         <span class="badge" title="服务健康状态">
           <span class="dot" id="health-dot"></span>
           <span id="health-text">unknown</span>
@@ -49,6 +53,39 @@
           <span class="ico">≋</span>
           <span>Logs</span>
         </button>
+        <div class="navgroup-title u-mt-16">小插件</div>
+        <button class="navbtn navbtn-sub" data-view="feishu-resources">
+          <span class="ico">◉</span>
+          <span>网络资源清单</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="feishu-devices">
+          <span class="ico">▣</span>
+          <span>可信设备</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="feishu-device-import">
+          <span class="ico">◉</span>
+          <span>飞书可信设备导入</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="external-ip-sync">
+          <span class="ico">◈</span>
+          <span>Google IP 同步</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="dlp-analysis">
+          <span class="ico">◉</span>
+          <span>DLP文件误报分析</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="dup-device-cleanup">
+          <span class="ico">◈</span>
+          <span>重复设备删除</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="ztna-policy">
+          <span class="ico">◉</span>
+          <span>ZTNA访问控制策略推荐</span>
+        </button>
+        <button class="navbtn navbtn-sub" data-view="guest-wifi">
+          <span class="ico">◈</span>
+          <span>访客WiFi申请</span>
+        </button>
       </nav>
 
       <main class="content">
@@ -73,7 +110,7 @@
             <div class="stat-card stat-card-emphasis">
               <div class="stat-label">服务健康</div>
               <div class="stat-value" id="health-big">—</div>
-              <div class="row" style="margin-top:8px">
+              <div class="row u-mt-8">
                 <div class="pill" id="health-pill">unknown</div>
               </div>
             </div>
@@ -95,10 +132,10 @@
           </div>
           <div class="grid">
             <div class="card" id="api-task-definition-card">
-              <div class="row" style="justify-content:space-between">
+              <div class="row u-justify-between">
                 <div>
                   <div class="subtitle">健康状态</div>
-                  <div style="font-size:28px;font-weight:800;letter-spacing:.2px">运行态检查</div>
+                  <div class="u-strong-bold" style="font-size:28px;letter-spacing:.2px">运行态检查</div>
                 </div>
                 <div class="pill">核心链路</div>
               </div>
@@ -152,6 +189,7 @@
           <div class="segmented conn-subnav" id="conn-subnav">
             <button class="seg active" id="btn-sub-feilian" type="button">飞连API配置</button>
             <button class="seg" id="btn-sub-llm" type="button">LLM_API配置</button>
+            <button class="seg" id="btn-sub-feishu" type="button">飞书API配置</button>
             <button class="seg" id="btn-sub-webhook" type="button">webhook配置</button>
           </div>
 
@@ -193,7 +231,7 @@
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>名称（可选，用于历史清单显示）</label>
                         <input id="conn-name" placeholder="例如：生产-飞连 / 测试环境" />
                       </div>
@@ -203,7 +241,7 @@
                         <label>scheme</label>
                         <input id="conn-scheme" placeholder="https" />
                       </div>
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>host（域名 / IP）</label>
                         <input id="conn-host" placeholder="feilian.example.com 或 10.0.0.1" />
                       </div>
@@ -221,13 +259,13 @@
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:1">
+                      <div class="field u-flex-1">
                         <label>AccessKey ID</label>
                         <input id="conn-ak" placeholder="AccessKey ID" />
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:1">
+                      <div class="field u-flex-1">
                         <label>AccessKey Secret</label>
                         <input id="conn-sk" placeholder="AccessKey Secret（保存后不回显）" />
                       </div>
@@ -290,13 +328,13 @@
                         <label>LLM_API ID</label>
                         <input id="llm-api-id" placeholder="例如 llm_prod_main" />
                       </div>
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>LLM_API 名称</label>
                         <input id="llm-api-name" placeholder="例如：生产主模型 / 测试回归模型" />
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>tags</label>
                         <input id="llm-api-tags" placeholder="Planner 模型, Formatter 模型, 自定义标签" />
                       </div>
@@ -306,7 +344,7 @@
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>base_url</label>
                         <input id="llm-api-base-url" placeholder="https://api.deepseek.com/v1" />
                       </div>
@@ -316,7 +354,7 @@
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>api_key</label>
                         <input id="llm-api-api-key" placeholder="保存后不回显；留空则沿用已保存密钥" />
                       </div>
@@ -432,13 +470,13 @@
                         <label>webhook-id</label>
                         <input id="webhook-id" placeholder="例如 order_created_push" />
                       </div>
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>name</label>
                         <input id="webhook-name" placeholder="例如：订单创建通知 / 飞书机器人推送" />
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field" style="flex:2">
+                      <div class="field u-flex-2">
                         <label>url</label>
                         <input id="webhook-url" placeholder="https://example.com/webhook" />
                       </div>
@@ -496,7 +534,411 @@
             </div>
           </section>
 
-          <div class="subtitle">说明：secret 保存后不会回显；若不想改 secret，可留空再保存。当前提交仅完成三子页结构与通用布局骨架。</div>
+          <section id="subpage-feishu" class="hidden">
+            <div class="config-subpage-layout">
+              <div class="card config-subpage-side">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">飞书_API 列表</div>
+                    <div class="subtitle">查看所有飞书自建应用 API 配置，从左侧清单点击进入查看/编辑/新建工作台。</div>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="btn" id="btn-feishu-refresh">刷新</button>
+                    <button class="btn primary" id="btn-feishu-create">新增</button>
+                  </div>
+                </div>
+                <div id="feishu-api-list" class="config-record-list subtitle">暂无飞书_API 配置 — 点击右上角"新增"创建第一条。</div>
+              </div>
+
+              <div class="card config-subpage-detail">
+                <div id="feishu-api-form" class="connection-form-shell">
+                  <div class="panel-head">
+                    <div>
+                      <div class="panel-title">飞书_API 工作台</div>
+                      <div class="subtitle">统一维护飞书自建应用的 app_id 与 app_secret，支持测试获取 tenant_access_token 验证。</div>
+                    </div>
+                  </div>
+                  <div class="workbench-actions">
+                    <button class="btn" id="btn-feishu-edit">切换编辑态</button>
+                    <button class="btn" id="btn-feishu-test">测试</button>
+                    <button class="btn danger" id="btn-feishu-delete">删除</button>
+                    <button class="btn primary" id="btn-feishu-save">保存</button>
+                    <label class="checkbox-line u-ml-8">
+                      <input type="checkbox" id="feishu-activate" />
+                      <span>保存后设为 ACTIVE</span>
+                    </label>
+                  </div>
+                  <div class="form-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">基础字段</div>
+                        <div class="subtitle">记录一条飞书自建应用的 API 配置，便于后续调用。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>ID</label>
+                        <input id="feishu-api-id" placeholder="例如 feishu_prod_main" />
+                      </div>
+                      <div class="field u-flex-2">
+                        <label>名称</label>
+                        <input id="feishu-api-name" placeholder="例如：生产主飞书应用 / 测试环境通知" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>App ID</label>
+                        <input id="feishu-api-app-id" placeholder="cli_xxxxxxxxxxxxxx" />
+                      </div>
+                      <div class="field">
+                        <label>App Secret</label>
+                        <input id="feishu-api-app-secret" type="password" placeholder="保存后不回显；编辑时可留空沿用已有密钥" />
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field u-flex-2">
+                        <label>Base URL</label>
+                        <input id="feishu-api-base-url" placeholder="默认 https://open.feishu.cn" />
+                      </div>
+                      <div class="field">
+                        <label>启用</label>
+                        <select id="feishu-api-enabled">
+                          <option value="true" selected>true</option>
+                          <option value="false">false</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="result-shell">
+                  <div class="result-head">
+                    <div>
+                      <div class="section-title">飞书_API 输出</div>
+                      <div class="subtitle">展示飞书 API 配置的保存、删除与测试获取 tenant_access_token 的反馈结果。</div>
+                    </div>
+                  </div>
+                  <pre id="feishu-api-out" class="pre">暂无飞书_API 输出</pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="subtitle">说明：secret 保存后不会回显；若不想改 secret，可留空再保存。当前提交仅完成子页结构与通用布局骨架。</div>
+        </section>
+
+        <section class="view hidden" id="view-feishu-resources">
+          <div class="page-title">
+            <div>
+              <h2>网络资源清单</h2>
+              <div class="subtitle">从飞连 API 拉取地址组资源列表（IP和域名），缓存到本地数据库。点击资源名称查看详情。</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">控制区</div>
+                <div class="subtitle" id="feishu-resources-status">暂无数据</div>
+              </div>
+              <div class="panel-actions">
+                <button class="btn" id="btn-feishu-resources-refresh">刷新</button>
+                <div class="feishu-resources-cron-toggle">
+                  <div class="feishu-resources-cron-label">零点定时刷新</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-feishu-resources-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid api-layout feishu-resources-layout">
+            <div class="card feishu-resources-list-card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">资源列表</div>
+                  <div class="subtitle" id="feishu-resources-count">共 0 条</div>
+                </div>
+                <div class="panel-actions">
+                  <select id="feishu-resources-type-filter" aria-label="按类型筛选">
+                    <option value="">全部类型</option>
+                    <option value="ip">IP地址组</option>
+                    <option value="domain">域名组</option>
+                  </select>
+                </div>
+              </div>
+              <div class="feishu-resources-search-row">
+                <input id="feishu-resources-search" type="text" placeholder="搜索资源名称 / ID" />
+                <span class="group-count-badge" id="feishu-resources-filtered-count">0 条</span>
+              </div>
+              <div class="feishu-resources-table-wrap">
+                <table class="feishu-resources-table">
+                  <thead>
+                    <tr>
+                      <th style="width:50%;">资源名称</th>
+                      <th style="width:25%;">资源 ID</th>
+                      <th style="width:25%;">类型</th>
+                    </tr>
+                  </thead>
+                  <tbody id="feishu-resources-list">
+                    <tr><td colspan="3" class="table-empty">点击"刷新"获取资源列表</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card feishu-resources-detail-card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title" id="feishu-resources-detail-title">资源详情</div>
+                  <div class="subtitle" id="feishu-resources-detail-subtitle">点击左侧资源名称查看详情</div>
+                </div>
+              </div>
+              <div id="feishu-resources-detail-content" class="feishu-resources-detail-content">
+                <div class="empty-state">
+                  <div class="empty-icon">📋</div>
+                  <div class="empty-text">请选择一个资源查看详情</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-feishu-devices">
+          <div class="page-title">
+            <div>
+              <h2>可信设备</h2>
+              <div class="subtitle">从飞连 API 拉取设备分组列表，查看分组内设备详情，设备信息自动存入本地数据库。</div>
+            </div>
+          </div>
+
+          <div class="device-groups-layout">
+            <div class="card device-groups-side">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">设备分组</div>
+                  <div class="subtitle" id="device-groups-count">共 0 个分组</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn primary" id="btn-device-groups-refresh">立即同步</button>
+                </div>
+              </div>
+              <div class="device-groups-search-row">
+                <input id="device-groups-search" type="text" placeholder="搜索设备分组 ID 或名称" />
+                <span class="group-count-badge" id="device-groups-filtered-count">0 组</span>
+              </div>
+              <div class="device-groups-table-wrap">
+                <table class="device-groups-table">
+                  <thead>
+                    <tr>
+                      <th style="width:42%;">设备分组 ID</th>
+                      <th>设备分组名称</th>
+                    </tr>
+                  </thead>
+                  <tbody id="device-groups-list">
+                    <tr><td colspan="2" class="table-empty">点击"立即同步"获取设备分组列表</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card device-detail-main">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title" id="device-group-detail-title">分组设备详情</div>
+                  <div class="subtitle" id="device-group-detail-info">请选择左侧分组并点击"立即获取"</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn primary" id="btn-device-group-fetch" disabled>立即获取</button>
+                </div>
+              </div>
+              <div class="device-detail-search-row">
+                <input id="device-detail-search" type="text" placeholder="搜索设备名称 / OS 类型 / 所属用户" />
+                <span class="group-count-badge" id="device-detail-count-badge">0 台设备</span>
+              </div>
+              <div class="device-detail-table-wrap">
+                <table class="device-detail-table">
+                  <thead>
+                    <tr>
+                      <th style="width:38%;">设备名称</th>
+                      <th style="width:30%;">OS 类型</th>
+                      <th>所属用户</th>
+                    </tr>
+                  </thead>
+                  <tbody id="device-group-detail">
+                    <tr><td colspan="3" class="table-empty">选择左侧分组后，点击"立即获取"查看该分组下的设备详情</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-feishu-device-import">
+          <div class="page-title">
+            <div>
+              <h2>飞书可信设备导入</h2>
+              <div class="subtitle">按筛选条件和字段映射，将飞连设备信息导入/更新到飞书设备记录。</div>
+            </div>
+          </div>
+
+          <div class="card device-import-filter-card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">设备筛选</div>
+                <div class="subtitle">选择操作系统、信任状态、分组等条件，筛选需要导入的设备。</div>
+              </div>
+              <div class="panel-actions">
+                <button class="btn primary" id="btn-device-import-now">开始同步</button>
+              </div>
+            </div>
+            <div class="filter-multi-select-row">
+              <div class="filter-multi-select-item">
+                <div class="filter-col-title">操作系统（可多选，不选=全部）</div>
+                <select id="filter-os-import" multiple size="5" class="filter-multi-native">
+                </select>
+              </div>
+              <div class="filter-multi-select-item">
+                <div class="filter-col-title">信任状态（可多选，不选=全部）</div>
+                <select id="filter-trusted-import" multiple size="5" class="filter-multi-native">
+                  <option value="可信">可信</option>
+                  <option value="不可信">不可信</option>
+                  <option value="未标记">未标记</option>
+                </select>
+              </div>
+              <div class="filter-multi-select-item">
+                <div class="filter-col-title">分组（可多选，不选=全部）</div>
+                <select id="filter-group-import" multiple size="5" class="filter-multi-native">
+                </select>
+              </div>
+            </div>
+            <div class="filter-logic-row">
+              <span class="filter-logic-label">筛选条件间逻辑关系：</span>
+              <label class="radio-label">
+                <input type="radio" name="filter-logic-mode" value="AND" checked />
+                <span>AND（同时满足）</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="filter-logic-mode" value="OR" />
+                <span>OR（满足任一）</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="field-mapping-tabs">
+              <button class="field-mapping-tab active" data-tab="mapping">字段映射配置</button>
+              <button class="field-mapping-tab" data-tab="schedule">同步配置</button>
+            </div>
+            <div class="field-mapping-tab-content">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">字段映射配置</div>
+                  <div class="subtitle">配置飞连字段与飞书字段的映射关系，启用后将在同步时生效。</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn primary" id="btn-field-mappings-add-import">添加映射</button>
+                  <button class="btn ghost" id="btn-field-mappings-refresh-import">刷新</button>
+                </div>
+              </div>
+              <div class="field-mappings-table-wrap">
+                <table class="field-mappings-table">
+                  <thead>
+                    <tr>
+                      <th style="width:60px;">启用</th>
+                      <th>第三方字段</th>
+                      <th style="width:140px;">映射规则</th>
+                      <th>飞连字段</th>
+                      <th style="width:100px;">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="field-mappings-body-import"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card device-import-control-card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">同步配置</div>
+                <div class="subtitle" id="device-import-status">未导入</div>
+              </div>
+            </div>
+            <div class="import-control-row">
+              <label class="checkbox-label">
+                <input type="checkbox" id="chk-device-import-enabled" />
+                <span>自动同步</span>
+              </label>
+              <select id="select-device-import-interval" class="input u-width-auto u-ml-16">
+                <option value="5min">5分钟</option>
+                <option value="1h">1小时</option>
+                <option value="12h">12小时</option>
+                <option value="1day">1天</option>
+              </select>
+              <div class="import-stats">
+                <span id="device-import-count" class="import-stat-item">已导入：0</span>
+                <span id="device-import-time" class="import-stat-item">最后导入：-</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-external-ip-sync">
+          <div class="page-title">
+            <div>
+              <h2>Google IP 同步配置</h2>
+              <div class="subtitle">使用稳定、清晰的三列任务视图管理外部IP同步项。左侧强调扫描效率，右侧保留原有表单录入逻辑，并补充"凌晨一点周期同步"控制，便于一键切换日常自动任务。</div>
+            </div>
+          </div>
+          <div class="grid api-layout">
+            <div class="card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">外部 IP 同步任务列表</div>
+                  <div class="subtitle">每一个任务占据一整行，用三列信息结构快速查看任务、写入路径和操作状态。</div>
+                </div>
+                <div class="panel-actions">
+                  <button class="btn" id="btn-external-ip-sync-refresh">刷新</button>
+                  <button class="btn primary" id="btn-external-ip-sync-create">新建</button>
+                </div>
+              </div>
+              <div class="external-ip-task-table">
+                <div class="external-ip-task-table-header">
+                  <div class="external-ip-task-col-name">任务名称</div>
+                  <div class="external-ip-task-col-path">写入路径</div>
+                  <div class="external-ip-task-col-status">状态栏</div>
+                </div>
+                <div id="external-ip-sync-list" class="external-ip-task-table-body">
+                  <div class="subtitle" style="text-align:center;padding:30px 0;">暂无同步任务 — 点击右上角"新建"创建第一条。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title" id="external-ip-sync-edit-title">新建同步任务</div>
+                  <div class="subtitle" id="external-ip-sync-edit-subtitle">目标：同步 Google IP Ranges 到本地路径，并根据你的配置决定是否周期执行。</div>
+                </div>
+              </div>
+              <div id="external-ip-sync-edit-form" class="form-section"></div>
+              <div class="row u-mt-16">
+                <button class="btn primary" id="btn-external-ip-sync-save">保存</button>
+                <button class="btn" id="btn-external-ip-sync-clear">清空</button>
+                <button class="btn danger hidden" id="btn-external-ip-sync-delete">删除</button>
+              </div>
+              <div class="external-ip-cron-toggle">
+                <div class="external-ip-cron-label">凌晨一点周期同步</div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="external-ip-cron-enabled" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section class="view hidden" id="view-tasks">
@@ -553,12 +995,12 @@
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>草稿 ID</label>
                       <input id="draft-id" placeholder="例如 draft_users_sync" />
                       <div class="field-error" id="draft-id-error"></div>
                     </div>
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>草稿名称</label>
                       <input id="draft-name" placeholder="例如 用户同步草稿" />
                       <div class="field-error" id="draft-name-error"></div>
@@ -594,19 +1036,19 @@
                       <label>任务次数</label>
                       <input id="draft-run-count" type="number" min="1" value="1" />
                     </div>
-                    <div class="field" style="flex:1.4">
+                    <div class="field u-flex-1-5">
                       <label>结束时间</label>
                       <input id="draft-run-until" type="date" />
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>webhook 配置</label>
                       <select id="draft-webhook-config-id">
                         <option value="">不绑定 webhook</option>
                       </select>
                     </div>
-                    <label class="field" style="max-width:220px">
+                    <label class="field u-max-width-220">
                       <span>启用推送引用</span>
                       <input id="draft-webhook-enabled" type="checkbox" />
                     </label>
@@ -627,7 +1069,7 @@
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>template_id</label>
                       <input id="exec-template" placeholder="例如 users_list" />
                     </div>
@@ -637,25 +1079,25 @@
                       <label>method</label>
                       <input id="exec-method" placeholder="GET/POST/PUT..." />
                     </div>
-                    <div class="field" style="flex:2">
+                    <div class="field u-flex-2">
                       <label>path</label>
                       <input id="exec-path" placeholder="/api/open/v1/..." />
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>query(JSON)</label>
                       <input id="exec-query" placeholder='{"page":"1"}' />
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>path_params(JSON)</label>
                       <input id="exec-path-params" placeholder='{"user_id":"1"}' />
                     </div>
                   </div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>body(JSON)</label>
                     </div>
                   </div>
@@ -672,7 +1114,7 @@
                   <textarea id="draft-transform" rows="5" placeholder='{"type":"json_map","rules":[]}'></textarea>
                   <div class="subtitle">大模型调用</div>
                   <div class="row">
-                    <div class="field" style="flex:1">
+                    <div class="field u-flex-1">
                       <label>模型选择</label>
                       <select id="draft-llm-api-id">
                         <option value="">使用 role 的默认模型</option>
@@ -710,11 +1152,11 @@
                 </div>
               </div>
               <div class="row">
-                <div class="field" style="min-width:240px;flex:1">
+                <div class="field u-flex-1">
                   <label>搜索任务</label>
                   <input id="jobs-search" placeholder="按调度 ID / 草稿 ID 搜索…" />
                 </div>
-                <div class="field" style="max-width:220px">
+                <div class="field u-max-width-220">
                   <label>调度类型</label>
                   <select id="jobs-filter-type">
                     <option value="">全部类型</option>
@@ -722,7 +1164,7 @@
                     <option value="interval">interval</option>
                   </select>
                 </div>
-                <div class="field" style="max-width:220px">
+                <div class="field u-max-width-220">
                   <label>启用状态</label>
                   <select id="jobs-filter-enabled">
                     <option value="">全部状态</option>
@@ -768,12 +1210,458 @@
                 </div>
               </div>
               <div class="card" id="job-detail-card">
-                <div style="font-weight:750">调度详情</div>
+                <div class="u-bold">调度详情</div>
                 <div class="subtitle" id="job-detail-empty">选择一条调度查看详情</div>
                 <div id="job-detail"></div>
               </div>
             </div>
           </section>
+        </section>
+
+        <section class="view hidden" id="view-dlp-analysis">
+          <div class="page-title">
+            <div>
+              <h2>DLP 文件误报分析</h2>
+              <div class="subtitle">自动同步飞连DLP日志事件，使用LLM分析误报并管理白名单。</div>
+            </div>
+            <div class="page-actions">
+              <button class="btn" id="btn-dlp-sync">立即同步</button>
+              <button class="btn" id="btn-dlp-analyze">立即分析</button>
+              <button class="btn primary" id="btn-dlp-sync-analyze">立即同步分析</button>
+              <div class="dlp-cron-toggle">
+                <div class="dlp-cron-item">
+                  <div class="dlp-cron-label">零点同步</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-dlp-sync-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="dlp-cron-item">
+                  <div class="dlp-cron-label">零点分析</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-dlp-analysis-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row u-gap-16">
+            <div class="card u-flex-1">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">分析总览</div>
+                  <div class="subtitle">DLP事件分析统计</div>
+                </div>
+                <button class="btn ghost" id="btn-dlp-refresh-summary" title="刷新统计">↻</button>
+              </div>
+              <div class="row u-gap-16">
+                <div class="stat-item dlp-stat-clickable" onclick="dlpFilterBySummary('total')" title="点击筛选已分析事件">
+                  <div class="stat-value" id="dlp-stat-total">-</div>
+                  <div class="stat-label">总分析数</div>
+                </div>
+                <div class="stat-item dlp-stat-clickable" onclick="dlpFilterBySummary('excluded')" title="点击筛选判定误报事件">
+                  <div class="stat-value" id="dlp-stat-excluded">-</div>
+                  <div class="stat-label">判定误报</div>
+                </div>
+                <div class="stat-item dlp-stat-clickable" onclick="dlpFilterBySummary('kept')" title="点击筛选保留告警事件">
+                  <div class="stat-value" id="dlp-stat-kept">-</div>
+                  <div class="stat-label">保留告警</div>
+                </div>
+                <div class="stat-item dlp-stat-clickable" onclick="dlpFilterBySummary('whitelisted')" title="点击筛选已加白事件">
+                  <div class="stat-value" id="dlp-stat-whitelisted">-</div>
+                  <div class="stat-label">已加白</div>
+                </div>
+              </div>
+              <div class="row u-gap-16">
+                <div class="field">
+                  <label>上次同步</label>
+                  <div id="dlp-last-sync" class="subtitle">-</div>
+                </div>
+                <div class="field">
+                  <label>上次分析</label>
+                  <div id="dlp-last-analysis" class="subtitle">-</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card u-flex-1">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">快速加白</div>
+                  <div class="subtitle">添加文件路径/名称/格式到白名单</div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>匹配类型</label>
+                  <select id="dlp-whitelist-type">
+                    <option value="path">文件路径</option>
+                    <option value="name">文件名</option>
+                    <option value="extension">文件格式</option>
+                  </select>
+                </div>
+                <div class="field u-flex-2">
+                  <label>匹配值</label>
+                  <input id="dlp-whitelist-value" placeholder="例如: /var/log/ 或 .log 或 system.log" />
+                </div>
+                <div class="field u-flex-1">
+                  <label>描述</label>
+                  <input id="dlp-whitelist-desc" placeholder="可选描述" />
+                </div>
+                <div class="field">
+                  <label>&nbsp;</label>
+                  <button class="btn primary" id="btn-add-whitelist">添加</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">分析结果列表</div>
+                <div class="subtitle">按时间倒序排列，支持查看推理依据和加白操作</div>
+              </div>
+              <div class="row u-gap-12">
+                <select id="dlp-filter-status">
+                  <option value="">全部状态</option>
+                  <option value="analyzed">已分析</option>
+                  <option value="pending">待分析</option>
+                </select>
+                <select id="dlp-filter-category">
+                  <option value="">全部分类</option>
+                  <option value="user_personal">用户个人文件</option>
+                  <option value="os_system">操作系统文件</option>
+                  <option value="app_config">软件配置</option>
+                  <option value="app_log">日志文件</option>
+                  <option value="cache_temp">缓存临时文件</option>
+                  <option value="app_data">软件数据</option>
+                  <option value="whitelisted">已加白</option>
+                </select>
+                <select id="dlp-filter-exclude">
+                  <option value="">全部</option>
+                  <option value="true">判定为误报</option>
+                  <option value="false">保留告警</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>文件名</th>
+                    <th>文件路径</th>
+                    <th>分类</th>
+                    <th>判定</th>
+                    <th>置信度</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="dlp-analysis-list"></tbody>
+              </table>
+            </div>
+            <div class="pagination" id="dlp-pagination"></div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">白名单管理</div>
+                <div class="subtitle">管理文件路径/名称/格式的加白规则</div>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>类型</th>
+                    <th>匹配值</th>
+                    <th>描述</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="dlp-whitelist-list"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-dup-device-cleanup">
+          <div class="page-title">
+            <div>
+              <h2>重复设备删除</h2>
+              <div class="subtitle">自动识别飞连重复设备，支持批量清理无效设备记录。</div>
+            </div>
+            <div class="page-actions">
+              <button class="btn" id="btn-dup-sync">立即同步</button>
+              <button class="btn" id="btn-dup-detect">立即检测</button>
+              <button class="btn primary" id="btn-dup-sync-detect">立即同步检测</button>
+              <button class="btn danger" id="btn-dup-retry-cleanup">立即删除</button>
+              <div class="dup-cron-toggle">
+                <div class="dup-cron-item">
+                  <div class="dup-cron-label">零点同步</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-dup-sync-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="dup-cron-item">
+                  <div class="dup-cron-label">零点检测</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-dup-detect-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row u-gap-16 dup-stats-row">
+            <div class="stat-card">
+              <div class="stat-label">设备总数</div>
+              <div class="stat-value" id="dup-stat-total-devices">-</div>
+              <div class="stat-meta">已同步到本地</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">重复分组</div>
+              <div class="stat-value" id="dup-stat-pending-groups">-</div>
+              <div class="stat-meta">待处理</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">待人工确认</div>
+              <div class="stat-value" id="dup-stat-manual-groups">-</div>
+              <div class="stat-meta">仅序列号一致</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">已自动清理</div>
+              <div class="stat-value" id="dup-stat-auto-cleaned">-</div>
+              <div class="stat-meta">高匹配自动处理</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">重复设备分组</div>
+                <div class="subtitle">点击分组查看详情，高匹配设备将自动清理</div>
+              </div>
+              <div class="row u-gap-12">
+                <label class="sr-only" for="dup-filter-status">状态筛选</label>
+                <select id="dup-filter-status" aria-label="按状态筛选分组">
+                  <option value="">全部状态</option>
+                  <option value="pending">待处理</option>
+                  <option value="auto_resolved">自动已清理</option>
+                  <option value="manual_resolved">手动已清理</option>
+                </select>
+                <label class="sr-only" for="dup-filter-match-level">匹配级别筛选</label>
+                <select id="dup-filter-match-level" aria-label="按匹配级别筛选分组">
+                  <option value="">全部匹配级别</option>
+                  <option value="high_match">高匹配</option>
+                  <option value="serial_only">仅序列号</option>
+                </select>
+              </div>
+            </div>
+            <div class="dup-main-layout">
+              <div class="dup-list-pane">
+                <div class="table-wrapper">
+                  <table class="data-table" aria-label="重复设备分组列表">
+                    <thead>
+                      <tr>
+                        <th scope="col">序列号</th>
+                        <th scope="col">匹配级别</th>
+                        <th scope="col" class="col-num">设备数</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">检测时间</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dup-group-list"></tbody>
+                  </table>
+                </div>
+                <div class="pagination" id="dup-pagination"></div>
+              </div>
+              <div class="dup-detail-pane" id="dup-detail-pane">
+                <div class="dup-detail-empty">
+                  <div class="subtitle">点击左侧分组查看详情</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">清理日志</div>
+                <div class="subtitle">所有自动和手动清理操作的记录</div>
+              </div>
+            </div>
+            <div class="table-wrapper dup-log-table-wrapper">
+              <table class="data-table" aria-label="设备清理日志列表">
+                <thead>
+                  <tr>
+                    <th scope="col">时间</th>
+                    <th scope="col">设备名称</th>
+                    <th scope="col">DID</th>
+                    <th scope="col">序列号</th>
+                    <th scope="col">清理类型</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">错误信息</th>
+                  </tr>
+                </thead>
+                <tbody id="dup-cleanup-log-list"></tbody>
+              </table>
+            </div>
+            <div class="pagination" id="dup-log-pagination"></div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-ztna-policy">
+          <div class="page-title">
+            <div>
+              <h2>ZTNA访问控制策略推荐</h2>
+              <div class="subtitle">基于VPN访问日志，结合LLM智能分析，给出权限回收和保留建议。</div>
+            </div>
+            <div class="page-actions">
+              <button class="btn" id="btn-ztna-sync">仅同步日志</button>
+              <button class="btn" id="btn-ztna-build-stats">构建统计</button>
+              <button class="btn" id="btn-ztna-analyze">运行分析</button>
+              <button class="btn primary" id="btn-ztna-sync-analyze">立即同步分析</button>
+              <div class="ztna-cron-toggle">
+                <div class="ztna-cron-item">
+                  <div class="ztna-cron-label">凌晨1点同步</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-ztna-sync-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="ztna-cron-item">
+                  <div class="ztna-cron-label">凌晨2点分析</div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="chk-ztna-analysis-schedule" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row u-gap-16">
+            <div class="card u-flex-1">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">数据总览</div>
+                  <div class="subtitle">访问日志与分析统计</div>
+                </div>
+                <button class="btn ghost" id="btn-ztna-refresh" title="刷新统计">↻</button>
+              </div>
+              <div class="row u-gap-16">
+                <div class="stat-item">
+                  <div class="stat-value" id="ztna-stat-total-logs">-</div>
+                  <div class="stat-label">访问日志</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value" id="ztna-stat-users">-</div>
+                  <div class="stat-label">活跃用户</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value" id="ztna-stat-resources">-</div>
+                  <div class="stat-label">访问资源</div>
+                </div>
+                <div class="stat-item">
+                  <div class="stat-value" id="ztna-stat-analyzed">-</div>
+                  <div class="stat-label">已分析</div>
+                </div>
+              </div>
+              <div class="row u-gap-16">
+                <div class="field">
+                  <label>上次同步</label>
+                  <div id="ztna-last-sync" class="subtitle">-</div>
+                </div>
+                <div class="field">
+                  <label>上次统计</label>
+                  <div id="ztna-last-stats" class="subtitle">-</div>
+                </div>
+                <div class="field">
+                  <label>上次分析</label>
+                  <div id="ztna-last-analysis" class="subtitle">-</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card u-flex-1">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">分析结果分布</div>
+                  <div class="subtitle">点击可筛选查看对应分类</div>
+                </div>
+              </div>
+              <div class="row u-gap-16">
+                <div class="stat-item ztna-stat-clickable" onclick="ztnaFilterByCategory('access_should_have')" title="点击筛选建议保留">
+                  <div class="stat-value" id="ztna-stat-should-have">-</div>
+                  <div class="stat-label">建议保留</div>
+                </div>
+                <div class="stat-item ztna-stat-clickable" onclick="ztnaFilterByCategory('access_should_remove')" title="点击筛选建议回收">
+                  <div class="stat-value" id="ztna-stat-should-remove">-</div>
+                  <div class="stat-label">建议回收</div>
+                </div>
+                <div class="stat-item ztna-stat-clickable" onclick="ztnaFilterByCategory('access_needs_review')" title="点击筛选需审核">
+                  <div class="stat-value" id="ztna-stat-needs-review">-</div>
+                  <div class="stat-label">需人工审核</div>
+                </div>
+                <div class="stat-item ztna-stat-clickable" onclick="ztnaFilterByCategory('unknown')" title="点击筛选无法判断">
+                  <div class="stat-value" id="ztna-stat-unknown">-</div>
+                  <div class="stat-label">无法判断</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">策略分析结果</div>
+                <div class="subtitle">按置信度排序，点击查看详细分析依据</div>
+              </div>
+              <div class="row u-gap-12">
+                <select id="ztna-filter-category">
+                  <option value="">全部分类</option>
+                  <option value="access_should_have">建议保留</option>
+                  <option value="access_should_remove">建议回收</option>
+                  <option value="access_needs_review">需人工审核</option>
+                  <option value="unknown">无法判断</option>
+                </select>
+                <select id="ztna-filter-status">
+                  <option value="">全部状态</option>
+                  <option value="pending">待分析</option>
+                  <option value="analyzed">已分析</option>
+                  <option value="reviewed">已审核</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>用户</th>
+                    <th>部门</th>
+                    <th>目标资源</th>
+                    <th>分类</th>
+                    <th>置信度</th>
+                    <th>分析方式</th>
+                    <th>状态</th>
+                    <th>分析时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="ztna-analysis-list"></tbody>
+              </table>
+            </div>
+            <div class="pagination" id="ztna-pagination"></div>
+          </div>
         </section>
 
         <section class="view hidden" id="view-job-editor">
@@ -979,7 +1867,7 @@
                 </div>
                 <div id="complex-task-config" class="pre">{}</div>
               </div>
-              <div class="panel-actions" style="margin-top:14px">
+              <div class="panel-actions u-mt-12">
                 <button class="btn" id="btn-complex-run">试运行</button>
                 <button class="btn" id="btn-complex-save-draft">保存为任务草稿</button>
                 <button class="btn" id="btn-complex-save-output-template">保存为输出模板</button>
@@ -996,7 +1884,7 @@
                 </div>
                 <div id="complex-task-run-out" class="pre">暂无运行结果</div>
               </div>
-              <div class="card" style="box-shadow:none; margin-top:12px">
+              <div class="card u-no-box-shadow u-mt-12">
                 <div class="panel-head">
                   <div>
                     <div class="panel-title">已保存输出模板</div>
@@ -1047,7 +1935,7 @@
                 <div class="subtitle">左侧查看执行日志摘要，右侧查看系统日志 tail，用于快速排障。</div>
               </div>
               <div class="panel-actions">
-                <div class="field" style="max-width: 220px; min-width:180px">
+                <div class="field u-max-width-220" style="min-width:180px">
                   <label>tail</label>
                   <input id="log-tail" value="2000" />
                 </div>
@@ -1078,6 +1966,170 @@
             </div>
           </div>
         </section>
+
+        <section class="view hidden" id="view-guest-wifi">
+          <div class="page-title">
+            <div>
+              <h2>访客 WiFi 申请</h2>
+              <div class="subtitle">基于飞连开放平台为访客申请 / 创建 Wi-Fi 账号，支持“基本信息申请”与“批量创建账号”两种方式。</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="field-mapping-tabs guest-method-tabs">
+              <button type="button" class="field-mapping-tab active" data-guest-method="apply">基本信息申请（guest/apply）</button>
+              <button type="button" class="field-mapping-tab" data-guest-method="create">批量创建账号（guest/create）</button>
+            </div>
+
+            <div class="guest-method-panel" data-guest-panel="apply">
+              <div class="field-mapping-tab-content">
+                <div class="section-head">
+                  <div>
+                    <div class="section-title">方式一：基于基本信息申请</div>
+                    <div class="subtitle">填写到访时间、手机号等基本信息，由飞连自动生成访客 Wi-Fi 账号。对应接口 POST /api/open/v1/wifi/guest/apply。</div>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div class="field">
+                    <label for="guest-apply-mobile">访客手机号（选填）</label>
+                    <input id="guest-apply-mobile" type="tel" autocomplete="off" placeholder="如 13100001010" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-apply-count">生成账号数量（选填，默认 1）</label>
+                    <input id="guest-apply-count" type="number" min="1" step="1" value="1" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-apply-arrival">预计到达时间（必填）</label>
+                    <input id="guest-apply-arrival" type="datetime-local" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-apply-departure">预计离开时间（必填）</label>
+                    <input id="guest-apply-departure" type="datetime-local" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-apply-reason">到访原因（选填，默认其他）</label>
+                    <select id="guest-apply-reason">
+                      <option value="1">1 - 会议</option>
+                      <option value="2">2 - 面试</option>
+                      <option value="3">3 - 客户接待</option>
+                      <option value="4">4 - 亲友接待</option>
+                      <option value="5">5 - 维修施工</option>
+                      <option value="6" selected>6 - 其他</option>
+                    </select>
+                  </div>
+                  <div class="field guest-check-field">
+                    <label>可选项</label>
+                    <div class="guest-check-row">
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="guest-apply-send-sms" />
+                        <span>发送短信（仅 1 个账号时生效）</span>
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="guest-apply-mobile-as-account" />
+                        <span>手机号作为账号（仅生成 1 个）</span>
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" id="guest-apply-auto-extend" checked />
+                        <span>自动扩展生效 / 失效时间（前后各 4 小时）</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="field u-mt-16">
+                  <label for="guest-apply-note">备注（选填）</label>
+                  <textarea id="guest-apply-note" class="guest-note" placeholder="如来访单位、接待人等备注信息"></textarea>
+                </div>
+                <div class="row u-mt-16">
+                  <button class="btn primary" id="btn-guest-apply-submit">提交申请</button>
+                  <span class="subtitle" id="guest-apply-hint"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="guest-method-panel hidden" data-guest-panel="create">
+              <div class="field-mapping-tab-content">
+                <div class="section-head">
+                  <div>
+                    <div class="section-title">方式二：批量创建访客账号</div>
+                    <div class="subtitle">自行指定用户名 / 密码，一次创建多个访客账号。对应接口 POST /api/open/v1/wifi/guest/create。</div>
+                  </div>
+                  <div class="row u-gap-12">
+                    <button class="btn" type="button" id="btn-guest-create-add">添加账号</button>
+                  </div>
+                </div>
+                <div class="table-wrapper">
+                  <table class="data-table" aria-label="访客账号列表">
+                    <thead>
+                      <tr>
+                        <th scope="col">用户名（必填，1-15 位字母数字或带区号手机号）</th>
+                        <th scope="col">密码（必填，6-15 位字母数字）</th>
+                        <th scope="col">用户名是否为手机号</th>
+                        <th scope="col">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="guest-create-accounts-body"></tbody>
+                  </table>
+                </div>
+                <div class="grid u-mt-16">
+                  <div class="field">
+                    <label for="guest-create-start">账号生效时间 / 来访时间（必填）</label>
+                    <input id="guest-create-start" type="datetime-local" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-create-end">账号过期时间（必填）</label>
+                    <input id="guest-create-end" type="datetime-local" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-create-reason">到访原因（必填）</label>
+                    <select id="guest-create-reason">
+                      <option value="1">1 - 会议</option>
+                      <option value="2">2 - 面试</option>
+                      <option value="3">3 - 客户接待</option>
+                      <option value="4">4 - 亲友接待</option>
+                      <option value="5">5 - 维修施工</option>
+                      <option value="6" selected>6 - 其他</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="guest-create-max-client">单账号最大客户端数（选填）</label>
+                    <input id="guest-create-max-client" type="number" min="1" step="1" placeholder="如 5" />
+                  </div>
+                  <div class="field">
+                    <label for="guest-create-uid">申请人用户 ID（选填，uid）</label>
+                    <input id="guest-create-uid" type="text" autocomplete="off" placeholder="如 ou_paQAG30Oeo" />
+                  </div>
+                </div>
+                <div class="row u-mt-16">
+                  <button class="btn primary" id="btn-guest-create-submit">批量创建</button>
+                  <span class="subtitle" id="guest-create-hint"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">请求与响应</div>
+                <div class="subtitle">展示最近一次提交的请求参数与飞连原始返回，业务返回 code = 0 表示成功。</div>
+              </div>
+              <div class="row u-gap-12">
+                <span class="pill" id="guest-result-status">未提交</span>
+              </div>
+            </div>
+            <div id="guest-result-accounts" class="guest-accounts-result"></div>
+            <div class="guest-result-grid">
+              <div>
+                <div class="subtitle">请求参数</div>
+                <pre id="guest-result-request" class="pre guest-pre">{}</pre>
+              </div>
+              <div>
+                <div class="subtitle">飞连响应</div>
+                <pre id="guest-result-response" class="pre guest-pre">（暂无）</pre>
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -1090,7 +2142,7 @@
       <div class="drawer-backdrop" id="job-drawer-backdrop"></div>
       <div class="drawer-panel">
         <div class="modal-head">
-          <div style="font-weight:800">快捷调度</div>
+          <div class="u-strong-bold">快捷调度</div>
           <button class="btn ghost" id="job-drawer-close">关闭</button>
         </div>
         <div id="job-drawer-body"></div>
@@ -1102,20 +2154,158 @@
       <div class="modal-backdrop" id="modal-backdrop"></div>
       <div class="modal-panel" role="dialog" aria-modal="true" aria-label="测试连接结果">
         <div class="modal-head">
-          <div style="font-weight:800">测试连接结果</div>
+          <div class="u-strong-bold">测试连接结果</div>
           <button class="btn ghost" id="modal-close">关闭</button>
         </div>
         <div class="grid" style="grid-template-columns: 1fr 1fr">
-          <div class="card" style="box-shadow:none">
-            <div style="font-weight:750">Token 获取</div>
+          <div class="card u-no-box-shadow">
+            <div class="u-bold">Token 获取</div>
             <div class="subtitle">是否成功获取有效 access_token</div>
             <pre class="pre" id="modal-token"></pre>
           </div>
-          <div class="card" style="box-shadow:none">
-            <div style="font-weight:750">API 探测</div>
+          <div class="card u-no-box-shadow">
+            <div class="u-bold">API 探测</div>
             <div class="subtitle">使用 users_list（或 GET /api/v1/users）验证 Authorization 生效</div>
             <pre class="pre" id="modal-probe"></pre>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="field-mapping-modal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel field-mapping-modal-panel" role="dialog" aria-modal="true" aria-label="编辑映射关系">
+        <div class="modal-head">
+          <div class="u-strong-bold">编辑映射关系</div>
+          <button class="btn ghost" id="field-mapping-modal-close">关闭</button>
+        </div>
+        <div class="field-mapping-modal-body">
+          <div id="field-mapping-rows"></div>
+          <div class="field-mapping-add-row">
+            <button class="btn-link" id="btn-add-mapping-row">
+              <span class="plus-icon">+</span> 添加映射
+            </button>
+          </div>
+        </div>
+        <div class="field-mapping-modal-foot">
+          <button class="btn ghost" id="field-mapping-modal-cancel">取消</button>
+          <button class="btn primary" id="field-mapping-modal-confirm">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="dlp-analysis-modal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="DLP分析详情">
+        <div class="modal-head">
+          <div>
+            <div class="section-title">DLP分析详情</div>
+            <div class="subtitle" id="dlp-modal-filename">-</div>
+          </div>
+          <button class="btn ghost" id="dlp-modal-close">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="row u-gap-16">
+            <div class="field u-flex-1">
+              <label>文件路径</label>
+              <div class="monospace" id="dlp-modal-path">-</div>
+            </div>
+            <div class="field">
+              <label>文件类型</label>
+              <div id="dlp-modal-type">-</div>
+            </div>
+          </div>
+          <div class="row u-gap-16">
+            <div class="field">
+              <label>分类结果</label>
+              <div id="dlp-modal-category">-</div>
+            </div>
+            <div class="field">
+              <label>判定结果</label>
+              <div id="dlp-modal-decision">-</div>
+            </div>
+            <div class="field">
+              <label>置信度</label>
+              <div id="dlp-modal-confidence">-</div>
+            </div>
+          </div>
+          <div class="row u-gap-16">
+            <div class="field">
+              <label>泄露途径</label>
+              <div id="dlp-modal-leak-way">-</div>
+            </div>
+            <div class="field">
+              <label>分析时间</label>
+              <div id="dlp-modal-analyzed-at">-</div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field u-flex-1">
+              <label>推理依据</label>
+              <pre class="pre" id="dlp-modal-reasoning"></pre>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <div class="row u-gap-12">
+            <button class="btn" id="dlp-modal-whitelist-path">加白文件路径</button>
+            <button class="btn" id="dlp-modal-whitelist-name">加白文件名</button>
+            <button class="btn" id="dlp-modal-whitelist-ext">加白文件格式</button>
+            <button class="btn ghost" id="dlp-modal-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="dlp-whitelist-confirm-modal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="确认加白">
+        <div class="modal-head">
+          <div>
+            <div class="section-title">确认加白</div>
+            <div class="subtitle">选择匹配方式并确认添加到白名单</div>
+          </div>
+          <button class="btn ghost" id="dlp-whitelist-modal-close">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="row u-gap-16">
+            <div class="field">
+              <label>文件名</label>
+              <div class="monospace" id="dlp-whitelist-confirm-filename">-</div>
+            </div>
+            <div class="field u-flex-2">
+              <label>文件路径</label>
+              <div class="monospace" id="dlp-whitelist-confirm-filepath">-</div>
+            </div>
+          </div>
+          <div class="row u-gap-16" style="margin-top: 12px;">
+            <div class="field">
+              <label>匹配方式</label>
+              <select id="dlp-whitelist-confirm-matchtype">
+                <option value="path">按文件路径</option>
+                <option value="name">按文件名</option>
+                <option value="extension">按文件格式</option>
+              </select>
+            </div>
+            <div class="field u-flex-2">
+                <label>匹配值</label>
+                <input id="dlp-whitelist-confirm-matchvalue" class="monospace" placeholder="输入自定义匹配值" />
+              </div>
+          </div>
+          <div class="row" style="margin-top: 12px;">
+            <div class="field u-flex-1">
+              <label>描述</label>
+              <input id="dlp-whitelist-confirm-desc" placeholder="输入描述（可选）" />
+            </div>
+          </div>
+          <div class="alert-block" style="margin-top: 12px;">
+            <div class="alert-title">警告</div>
+            <div>加白后，后续同类文件将不再产生告警，请谨慎操作。</div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="dlp-whitelist-modal-cancel">取消</button>
+          <button class="btn primary" id="dlp-whitelist-modal-confirm">确认加白</button>
         </div>
       </div>
     </div>

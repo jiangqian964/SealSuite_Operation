@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sealsuite-operation/internal/api"
@@ -71,21 +73,37 @@ type Runner struct {
 
 	appDB *sql.DB
 
-	legacyJobRepo   repository.LegacyJobRepository
-	taskDraftRepo   *sqliteRepo.TaskDraftRepository
-	scheduleRepo    *sqliteRepo.ScheduleRepository
-	templateRepo    *sqliteRepo.TemplateRepository
-	webhookRepo     *sqliteRepo.WebhookRepository
-	llmAPIRepo      *sqliteRepo.LLMAPIRepository
-	complexTaskRepo *sqliteRepo.ComplexTaskRepository
-	externalIPSyncRepo repository.ExternalIPSyncTaskRepository
-	runLogsRepo     *sqliteRepo.JobRunsRepository
-	executionSvc    *service.ExecutionService
+	legacyJobRepo       repository.LegacyJobRepository
+	taskDraftRepo       *sqliteRepo.TaskDraftRepository
+	scheduleRepo        *sqliteRepo.ScheduleRepository
+	templateRepo        *sqliteRepo.TemplateRepository
+	webhookRepo         *sqliteRepo.WebhookRepository
+	llmAPIRepo          *sqliteRepo.LLMAPIRepository
+	complexTaskRepo     *sqliteRepo.ComplexTaskRepository
+	externalIPSyncRepo  repository.ExternalIPSyncTaskRepository
+	feishuResourcesRepo *sqliteRepo.FeishuResourcesRepository
+	feishuDevicesRepo   *sqliteRepo.FeishuDevicesRepository
+	deviceGroupsRepo    *sqliteRepo.DeviceGroupsRepository
+	fieldMappingRepo    *sqliteRepo.FieldMappingRepository
+	dlpEventRepo        *sqliteRepo.DLPEventRepository
+	dlpAnalysisRepo     *sqliteRepo.DLPAnalysisRepository
+	dlpWhitelistRepo    *sqliteRepo.DLPWhitelistRepository
+	dupDeviceRepo       *sqliteRepo.DupDeviceRepository
+	dupGroupRepo        *sqliteRepo.DupDeviceGroupRepository
+	dupGroupMemberRepo  *sqliteRepo.DupDeviceGroupMemberRepository
+	dupCleanupLogRepo   *sqliteRepo.DupDeviceCleanupLogRepository
+	dupTaskStateRepo    *sqliteRepo.DupDeviceTaskStateRepository
+	ztnaLogRepo         *sqliteRepo.ZTNAAccessLogRepository
+	ztnaStatsRepo       *sqliteRepo.ZTNAAccessStatsRepository
+	ztnaAnalysisRepo    *sqliteRepo.ZTNAAnalysisRepository
+	ztnaTaskStateRepo   *sqliteRepo.ZTNATaskStateRepository
+	runLogsRepo         *sqliteRepo.JobRunsRepository
+	executionSvc        *service.ExecutionService
 
 	client   *sealsuite.Client
 	executor *api.Executor
 
-	executeExternalIPSync     func(id string) (*service.ExternalIPSyncExecutionSummary, error)
+	executeExternalIPSync    func(id string) (*service.ExternalIPSyncExecutionSummary, error)
 	fetchGoogleCIDRs         func(task storage.ExternalIPSyncTask) ([]string, error)
 	loadFeilianResourceCIDRs func(resourceID string) ([]string, error)
 	writeFeilianCIDRs        func(task storage.ExternalIPSyncTask, cidrs []string) error
@@ -98,6 +116,7 @@ type Runner struct {
 
 	status         map[string]*JobStatus
 	scheduleStatus map[string]*JobStatus
+	statusMu       sync.RWMutex
 }
 
 func New(cfg *config.Config, client *sealsuite.Client) *Runner {
@@ -112,10 +131,52 @@ func New(cfg *config.Config, client *sealsuite.Client) *Runner {
 	}
 	r.fetchGoogleCIDRs = r.defaultFetchGoogleCIDRs
 	r.loadFeilianResourceCIDRs = r.defaultLoadFeilianResourceCIDRs
-	r.writeFeilianCIDRs = r.defaultWriteFeilianCIDRs
+	r.writeFeilianCIDRs = r.defaultWriteFeilianCIDRsV2
 	r.executeExternalIPSync = r.runExternalIPSyncTask
 	r.initSQLiteRuntime()
 	return r
+}
+
+func (r *Runner) InitDB(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if r.appDB != nil {
+		_ = r.appDB.Close()
+	}
+	r.appDB = db
+	r.setupRepositories(db)
+	return nil
+}
+
+func (r *Runner) setupRepositories(appDB *sql.DB) {
+	r.legacyJobRepo = sqliteRepo.NewLegacyJobRepository(appDB)
+	r.taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
+	r.scheduleRepo = sqliteRepo.NewScheduleRepository(appDB)
+	r.templateRepo = sqliteRepo.NewTemplateRepository(appDB)
+	r.webhookRepo = sqliteRepo.NewWebhookRepository(appDB)
+	r.llmAPIRepo = sqliteRepo.NewLLMAPIRepository(appDB)
+	r.complexTaskRepo = sqliteRepo.NewComplexTaskRepository(appDB)
+	r.externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
+	r.feishuResourcesRepo = sqliteRepo.NewFeishuResourcesRepository(appDB)
+	r.feishuDevicesRepo = sqliteRepo.NewFeishuDevicesRepository(appDB)
+	r.deviceGroupsRepo = sqliteRepo.NewDeviceGroupsRepository(appDB)
+	r.fieldMappingRepo = sqliteRepo.NewFieldMappingRepository(appDB)
+	r.dlpEventRepo = sqliteRepo.NewDLPEventRepository(appDB)
+	r.dlpAnalysisRepo = sqliteRepo.NewDLPAnalysisRepository(appDB)
+	r.dlpWhitelistRepo = sqliteRepo.NewDLPWhitelistRepository(appDB)
+	r.dupDeviceRepo = sqliteRepo.NewDupDeviceRepository(appDB)
+	r.dupGroupRepo = sqliteRepo.NewDupDeviceGroupRepository(appDB)
+	r.dupGroupMemberRepo = sqliteRepo.NewDupDeviceGroupMemberRepository(appDB)
+	r.dupCleanupLogRepo = sqliteRepo.NewDupDeviceCleanupLogRepository(appDB)
+	r.dupTaskStateRepo = sqliteRepo.NewDupDeviceTaskStateRepository(appDB)
+	r.ztnaLogRepo = sqliteRepo.NewZTNAAccessLogRepository(appDB)
+	r.ztnaStatsRepo = sqliteRepo.NewZTNAAccessStatsRepository(appDB)
+	r.ztnaAnalysisRepo = sqliteRepo.NewZTNAAnalysisRepository(appDB)
+	r.ztnaTaskStateRepo = sqliteRepo.NewZTNATaskStateRepository(appDB)
+	r.runLogsRepo = sqliteRepo.NewJobRunsRepository(appDB)
+	r.executionSvc = service.NewExecutionService(r.runLogsRepo)
+	r.executeExternalIPSync = r.runExternalIPSyncTask
 }
 
 func (r *Runner) Executor() *api.Executor { return r.executor }
@@ -150,30 +211,20 @@ func (r *Runner) initSQLiteRuntime() {
 
 	appDB, err := appdb.OpenSQLite(dbPath)
 	if err != nil {
-		logger.Warn("failed to open sqlite runtime database", zap.String("path", dbPath), zap.Error(err))
+		logger.Warn("[Runner] 打开 SQLite 数据库失败", zap.String("path", dbPath), zap.Error(err))
 		return
 	}
 	if err := appdb.Migrate(appDB); err != nil {
-		logger.Warn("failed to migrate sqlite runtime database", zap.String("path", dbPath), zap.Error(err))
+		logger.Warn("[Runner] 数据库迁移失败", zap.String("path", dbPath), zap.Error(err))
 		_ = appDB.Close()
 		return
 	}
 	if err := appdb.BootstrapLegacyJobsFromYAML(appDB, "jobs.yaml"); err != nil {
-		logger.Warn("failed to bootstrap legacy jobs from jobs.yaml", zap.String("path", "jobs.yaml"), zap.Error(err))
+		logger.Warn("[Runner] 从 jobs.yaml 导入旧任务失败", zap.String("path", "jobs.yaml"), zap.Error(err))
 	}
 
 	r.appDB = appDB
-	r.legacyJobRepo = sqliteRepo.NewLegacyJobRepository(appDB)
-	r.taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
-	r.scheduleRepo = sqliteRepo.NewScheduleRepository(appDB)
-	r.templateRepo = sqliteRepo.NewTemplateRepository(appDB)
-	r.webhookRepo = sqliteRepo.NewWebhookRepository(appDB)
-	r.llmAPIRepo = sqliteRepo.NewLLMAPIRepository(appDB)
-	r.complexTaskRepo = sqliteRepo.NewComplexTaskRepository(appDB)
-	r.externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
-	r.runLogsRepo = sqliteRepo.NewJobRunsRepository(appDB)
-	r.executionSvc = service.NewExecutionService(r.runLogsRepo)
-	r.executeExternalIPSync = r.runExternalIPSyncTask
+	r.setupRepositories(appDB)
 }
 
 // HotReloadConfig 用于 Web 控制台保存连接信息后在线生效：
@@ -221,10 +272,12 @@ func (r *Runner) LoadSnapshot() (*storage.JobsFile, map[string]storage.Template,
 	}
 	// status copy
 	smap := map[string]*JobStatus{}
+	r.statusMu.RLock()
 	for k, v := range r.status {
 		cp := *v
 		smap[k] = &cp
 	}
+	r.statusMu.RUnlock()
 
 	latestRuns, err := r.latestRunLogStatus()
 	if err == nil {
@@ -283,10 +336,12 @@ func (r *Runner) LoadScheduleSnapshot() (*storage.JobSchedulesFile, map[string]s
 		dmap[d.ID] = storage.NormalizeTaskDraft(d)
 	}
 	smap := map[string]*JobStatus{}
+	r.statusMu.RLock()
 	for k, v := range r.scheduleStatus {
 		cp := *v
 		smap[k] = &cp
 	}
+	r.statusMu.RUnlock()
 
 	latestRuns, err := r.latestRunLogStatus()
 	if err == nil {
@@ -390,9 +445,40 @@ func (r *Runner) Reload() error {
 		}
 	}
 
+	r.setupDupDeviceCronJobs()
+	r.setupZTNACronJobs()
+
 	r.sched.Start()
 	r.refreshNextRun()
 	return nil
+}
+
+func (r *Runner) setupDupDeviceCronJobs() {
+	if err := r.sched.AddJob("dup_device_sync", "0 0 0 * * *", func() error {
+		logger.Info("[重复设备] 定时同步开始")
+		_, err := r.SyncDupDevices()
+		if err != nil {
+			logger.Error("[重复设备] 定时同步失败", zap.Error(err))
+		} else {
+			logger.Info("[重复设备] 定时同步完成")
+		}
+		return err
+	}); err != nil {
+		logger.Error("[重复设备] 添加定时同步任务失败", zap.Error(err))
+	}
+
+	if err := r.sched.AddJob("dup_device_detect", "0 0 2 * * *", func() error {
+		logger.Info("[重复设备] 定时检测开始")
+		_, err := r.RunDupDeviceFullProcess()
+		if err != nil {
+			logger.Error("[重复设备] 定时检测失败", zap.Error(err))
+		} else {
+			logger.Info("[重复设备] 定时检测完成")
+		}
+		return err
+	}); err != nil {
+		logger.Error("[重复设备] 添加定时检测任务失败", zap.Error(err))
+	}
 }
 
 func (r *Runner) Stop() {
@@ -494,6 +580,7 @@ func (r *Runner) runJob(j storage.Job) error {
 	finishedAt := time.Now()
 	dur := finishedAt.Sub(start).Milliseconds()
 
+	r.statusMu.Lock()
 	st := r.status[j.Name]
 	if st == nil {
 		st = &JobStatus{}
@@ -507,6 +594,7 @@ func (r *Runner) runJob(j storage.Job) error {
 	} else {
 		st.LastError = ""
 	}
+	r.statusMu.Unlock()
 	r.recordLegacyJobRun(j, "scheduler", start, finishedAt, err)
 	r.refreshNextRunFor(j.Name)
 	return err
@@ -530,7 +618,7 @@ func (r *Runner) executeJob(j storage.Job) error {
 		}
 		_, err := r.executor.Execute(api.ExecuteRequest{
 			TemplateID: tid,
-			Query:      coerceStringMap(input),
+			Query:      stringMapToIFMap(coerceStringMap(input)),
 			Body:       extractBody(input),
 		})
 		return err
@@ -554,8 +642,8 @@ func (r *Runner) executeJob(j storage.Job) error {
 		}
 		_, err := r.executor.Execute(api.ExecuteRequest{
 			TemplateID: tid,
-			PathParams: coerceStringMap(input), // 允许把变量放在 input 里
-			Query:      coerceStringMap(input),
+			PathParams: stringMapToIFMap(coerceStringMap(input)), // 允许把变量放在 input 里
+			Query:      stringMapToIFMap(coerceStringMap(input)),
 			Body:       extractBody(input),
 		})
 		return err
@@ -566,7 +654,7 @@ func (r *Runner) executeJob(j storage.Job) error {
 }
 
 func (r *Runner) executeSchedule(ctx context.Context, s storage.JobSchedule) (interface{}, webhook.DeliveryResult, error) {
-	targetType, targetID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+	targetType, targetID := NormalizeTarget(s.TargetType, s.TargetID, s.DraftID)
 	result, err := r.executeTargetOutputForSchedule(targetType, targetID)
 	if err != nil {
 		return result, webhook.DeliveryResult{Attempted: false}, err
@@ -576,19 +664,51 @@ func (r *Runner) executeSchedule(ctx context.Context, s storage.JobSchedule) (in
 
 func (r *Runner) runScheduleTarget(ctx context.Context, s storage.JobSchedule, triggerSource string) (interface{}, webhook.DeliveryResult, error) {
 	startedAt := time.Now()
+	targetType, targetID := NormalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+
+	logger.Info("[任务] 定时任务开始执行",
+		zap.String("schedule_id", s.ID),
+		zap.String("schedule_type", s.ScheduleType),
+		zap.String("cron", s.Cron),
+		zap.String("interval", s.Interval),
+		zap.String("target_type", targetType),
+		zap.String("target_id", targetID),
+		zap.String("trigger_source", triggerSource),
+		zap.Bool("enabled", s.Enabled),
+	)
+
 	result, delivery, err := r.executeSchedule(ctx, s)
 	finishedAt := time.Now()
+	duration := finishedAt.Sub(startedAt)
 
+	r.statusMu.Lock()
 	st := r.ensureStatus(r.scheduleStatus, s.ID)
 	st.LastRun = finishedAt
-	st.DurationMs = finishedAt.Sub(startedAt).Milliseconds()
+	st.DurationMs = duration.Milliseconds()
 	st.LastOK = err == nil
 	if err != nil {
 		st.LastError = err.Error()
 	} else {
 		st.LastError = ""
 	}
-	targetType, targetID := normalizeTarget(s.TargetType, s.TargetID, s.DraftID)
+	r.statusMu.Unlock()
+
+	if err != nil {
+		logger.Error("[任务] 定时任务执行失败",
+			zap.String("schedule_id", s.ID),
+			zap.Duration("duration", duration),
+			zap.Error(err),
+		)
+	} else {
+		logger.Info("[任务] 定时任务执行成功",
+			zap.String("schedule_id", s.ID),
+			zap.Duration("duration", duration),
+			zap.Bool("webhook_attempted", delivery.Attempted),
+			zap.Bool("webhook_ok", delivery.OK),
+			zap.Int("webhook_status_code", delivery.StatusCode),
+		)
+	}
+
 	r.recordScheduleRun(s, targetType, targetID, triggerSource, startedAt, finishedAt, result, err)
 	r.refreshNextRunForSchedule(s.ID)
 	return result, delivery, err
@@ -617,7 +737,36 @@ func (r *Runner) runTaskDraftByID(id string, enableWebhook bool, triggerSource s
 
 func (r *Runner) runTrackedTaskDraft(d storage.TaskDraft, enableWebhook bool, triggerSource string) (interface{}, webhook.DeliveryResult, error) {
 	startedAt := time.Now()
+
+	logger.Info("[任务] 任务草稿开始执行",
+		zap.String("task_id", d.ID),
+		zap.String("task_name", d.Name),
+		zap.String("mode", d.Mode),
+		zap.String("trigger_source", triggerSource),
+		zap.Bool("enable_webhook", enableWebhook),
+	)
+
 	result, delivery, err := r.runTaskDraftWithDelivery(d, enableWebhook)
+	duration := time.Since(startedAt)
+
+	if err != nil {
+		logger.Error("[任务] 任务草稿执行失败",
+			zap.String("task_id", d.ID),
+			zap.String("task_name", d.Name),
+			zap.Duration("duration", duration),
+			zap.Error(err),
+		)
+	} else {
+		logger.Info("[任务] 任务草稿执行成功",
+			zap.String("task_id", d.ID),
+			zap.String("task_name", d.Name),
+			zap.Duration("duration", duration),
+			zap.Bool("webhook_attempted", delivery.Attempted),
+			zap.Bool("webhook_ok", delivery.OK),
+			zap.Int("webhook_status_code", delivery.StatusCode),
+		)
+	}
+
 	r.recordTaskDraftRun(d, triggerSource, startedAt, time.Now(), result, err)
 	return result, delivery, err
 }
@@ -669,8 +818,8 @@ func (r *Runner) runTaskDraftWithDelivery(d storage.TaskDraft, enableWebhook boo
 		TemplateID: firstNonEmpty(d.SourceTemplateID, asString(input["template_id"])),
 		Method:     asString(input["method"]),
 		Path:       asString(input["path"]),
-		Query:      coerceStringMap(mapValue(input, "query")),
-		PathParams: coerceStringMap(mapValue(input, "path_params")),
+		Query:      stringMapToIFMap(coerceStringMap(mapValue(input, "query"))),
+		PathParams: stringMapToIFMap(coerceStringMap(mapValue(input, "path_params"))),
 		Body:       extractBody(mapValue(input, "body")),
 	}
 	if len(req.Body) == 0 {
@@ -784,6 +933,10 @@ func (r *Runner) loadExternalIPSyncTask(id string) (storage.ExternalIPSyncTask, 
 	return storage.NormalizeExternalIPSyncTask(got), nil
 }
 
+func (r *Runner) RunExternalIPSyncTask(id string) (*service.ExternalIPSyncExecutionSummary, error) {
+	return r.runExternalIPSyncTask(id)
+}
+
 func (r *Runner) runExternalIPSyncTask(id string) (*service.ExternalIPSyncExecutionSummary, error) {
 	task, err := r.loadExternalIPSyncTask(id)
 	if err != nil {
@@ -796,6 +949,19 @@ func (r *Runner) runExternalIPSyncTaskWithTask(task storage.ExternalIPSyncTask) 
 	task = storage.NormalizeExternalIPSyncTask(task)
 	r.ensureExternalIPSyncDeps()
 
+	createMode := strings.ToLower(strings.TrimSpace(task.CreateMode))
+	logger.Info("[外部IP同步] 任务开始执行",
+		zap.String("task_id", task.ID),
+		zap.String("task_name", task.Name),
+		zap.String("create_mode", createMode),
+		zap.String("resource_id", task.ResourceID),
+		zap.String("ip_version", task.IPVersion),
+		zap.String("source_url", task.SourceURL),
+		zap.String("feilian_api_path", task.FeilianAPIPath),
+		zap.Bool("dry_run", task.DryRun),
+		zap.Bool("skip_when_empty", task.SkipWhenEmpty),
+	)
+
 	summary := &service.ExternalIPSyncExecutionSummary{
 		TaskID:       task.ID,
 		ResourceID:   task.ResourceID,
@@ -805,40 +971,101 @@ func (r *Runner) runExternalIPSyncTaskWithTask(task storage.ExternalIPSyncTask) 
 		Status:       "success",
 	}
 
+	logger.Info("[外部IP同步] 开始获取Google IP列表", zap.String("source_url", task.SourceURL))
 	sourceCIDRs, err := r.fetchGoogleCIDRs(task)
 	if err != nil {
+		logger.Error("[外部IP同步] 获取Google IP列表失败",
+			zap.String("task_id", task.ID),
+			zap.Error(err),
+		)
 		summary.Status = "failed"
 		summary.ErrorMessage = err.Error()
 		return summary, err
 	}
 	summary.SourceTotal = len(sourceCIDRs)
 	summary.FilteredTotal = len(sourceCIDRs)
+	logger.Info("[外部IP同步] Google IP列表获取成功",
+		zap.String("task_id", task.ID),
+		zap.Int("cidr_count", len(sourceCIDRs)),
+	)
 
-	existingCIDRs, err := r.loadFeilianResourceCIDRs(task.ResourceID)
-	if err != nil {
-		summary.Status = "failed"
-		summary.ErrorMessage = err.Error()
-		return summary, err
+	var existingCIDRs []string
+	if createMode == storage.FeishuResourceCreateModeAdd {
+		logger.Info("[外部IP同步] 新增模式，跳过获取现有资源CIDR", zap.String("task_id", task.ID))
+		existingCIDRs = []string{}
+	} else {
+		logger.Info("[外部IP同步] 选择模式，开始获取飞连资源现有CIDR",
+			zap.String("task_id", task.ID),
+			zap.String("resource_id", task.ResourceID),
+		)
+		existingCIDRs, err = r.loadFeilianResourceCIDRs(task.ResourceID)
+		if err != nil {
+			logger.Error("[外部IP同步] 获取飞连资源CIDR失败",
+				zap.String("task_id", task.ID),
+				zap.String("resource_id", task.ResourceID),
+				zap.Error(err),
+			)
+			summary.Status = "failed"
+			summary.ErrorMessage = err.Error()
+			return summary, err
+		}
+		logger.Info("[外部IP同步] 飞连资源CIDR获取成功",
+			zap.String("task_id", task.ID),
+			zap.String("resource_id", task.ResourceID),
+			zap.Int("existing_cidr_count", len(existingCIDRs)),
+		)
 	}
 	summary.ExistingTotal = len(existingCIDRs)
 
 	toAdd := diffCIDRs(sourceCIDRs, existingCIDRs)
 	summary.ToAddTotal = len(toAdd)
+	logger.Info("[外部IP同步] CIDR差异计算完成",
+		zap.String("task_id", task.ID),
+		zap.Int("source_total", len(sourceCIDRs)),
+		zap.Int("existing_total", len(existingCIDRs)),
+		zap.Int("to_add_total", len(toAdd)),
+	)
 
 	if len(toAdd) == 0 && task.SkipWhenEmpty {
+		logger.Info("[外部IP同步] 无增量CIDR且配置跳过空更新，任务结束",
+			zap.String("task_id", task.ID),
+		)
 		summary.Status = "skipped"
 		return summary, nil
 	}
 	if task.DryRun {
+		logger.Info("[外部IP同步] Dry-run模式，仅预览不写入，任务结束",
+			zap.String("task_id", task.ID),
+			zap.Int("to_add_total", len(toAdd)),
+		)
 		summary.Status = "dry_run"
 		return summary, nil
 	}
+
+	logger.Info("[外部IP同步] 开始写入飞连",
+		zap.String("task_id", task.ID),
+		zap.String("create_mode", createMode),
+		zap.String("api_path", task.FeilianAPIPath),
+		zap.Int("cidr_count", len(toAdd)),
+	)
 	if err := r.writeFeilianCIDRs(task, toAdd); err != nil {
+		logger.Error("[外部IP同步] 写入飞连失败",
+			zap.String("task_id", task.ID),
+			zap.String("create_mode", createMode),
+			zap.String("api_path", task.FeilianAPIPath),
+			zap.Error(err),
+		)
 		summary.Status = "failed"
 		summary.ErrorMessage = err.Error()
 		return summary, err
 	}
 	summary.AddedTotal = len(toAdd)
+
+	logger.Info("[外部IP同步] 任务执行完成",
+		zap.String("task_id", task.ID),
+		zap.String("status", "success"),
+		zap.Int("added_total", len(toAdd)),
+	)
 	return summary, nil
 }
 
@@ -887,18 +1114,47 @@ func (r *Runner) defaultLoadFeilianResourceCIDRs(resourceID string) ([]string, e
 		return nil, fmt.Errorf("load feilian resource cidrs: sealsuite client is nil")
 	}
 
-	_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/addr/management/detail", map[string]string{
+	logger.Debug("[外部IP同步-加载资源] 开始获取飞连资源详情",
+		zap.String("resource_id", resourceID),
+	)
+
+	statusCode, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/addr/management/detail", map[string]string{
 		"resource_id": resourceID,
 	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("load feilian resource cidrs: %w", err)
+		logger.Warn("[外部IP同步-加载资源] 获取飞连资源详情失败，降级为全量追加",
+			zap.String("resource_id", resourceID),
+			zap.Error(err),
+		)
+		return []string{}, nil
+	}
+
+	if statusCode < 200 || statusCode >= 300 {
+		logger.Warn("[外部IP同步-加载资源] 飞连资源详情返回非200状态，降级为全量追加",
+			zap.String("resource_id", resourceID),
+			zap.Int("status_code", statusCode),
+			zap.String("response_body", truncateString(string(body), 500)),
+		)
+		return []string{}, nil
 	}
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode feilian resource cidrs response: %w", err)
+		logger.Warn("[外部IP同步-加载资源] 解析飞连资源详情JSON失败，降级为全量追加",
+			zap.String("resource_id", resourceID),
+			zap.Int("status_code", statusCode),
+			zap.String("response_body", truncateString(string(body), 500)),
+			zap.Error(err),
+		)
+		return []string{}, nil
 	}
-	return extractCIDRsFromPayload(payload), nil
+
+	cidrs := extractCIDRsFromPayload(payload)
+	logger.Info("[外部IP同步-加载资源] 飞连资源详情获取成功",
+		zap.String("resource_id", resourceID),
+		zap.Int("cidr_count", len(cidrs)),
+	)
+	return cidrs, nil
 }
 
 func (r *Runner) defaultWriteFeilianCIDRs(task storage.ExternalIPSyncTask, cidrs []string) error {
@@ -924,6 +1180,856 @@ func (r *Runner) defaultWriteFeilianCIDRs(task storage.ExternalIPSyncTask, cidrs
 		return fmt.Errorf("write feilian cidrs: empty response")
 	}
 	return nil
+}
+
+func (r *Runner) RefreshFeishuResources() ([]storage.FeishuResourceItem, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("refresh feishu resources: sealsuite client is nil")
+	}
+	if r.feishuResourcesRepo == nil {
+		return nil, fmt.Errorf("refresh feishu resources: repository is nil")
+	}
+
+	allItems := make([]storage.FeishuResourceItem, 0)
+	for _, resourceType := range []string{"ip", "domain"} {
+		query := map[string]string{
+			"type": resourceType,
+		}
+		_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/addr/management/list", query, nil)
+		if err != nil {
+			logger.Warn("[资源清单] 获取资源列表失败，跳过该类型",
+				zap.String("type", resourceType),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		var resp struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Count int                      `json:"count"`
+				Items []map[string]interface{} `json:"items"`
+				Apps  []map[string]interface{} `json:"apps"`
+			} `json:"data"`
+			Items []map[string]interface{} `json:"items"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			logger.Warn("[资源清单] 解析响应失败，跳过该类型",
+				zap.String("type", resourceType),
+				zap.Error(err),
+			)
+			continue
+		}
+		if resp.Code != 0 {
+			logger.Warn("[资源清单] API返回错误，跳过该类型",
+				zap.String("type", resourceType),
+				zap.Int("code", resp.Code),
+				zap.String("message", resp.Message),
+			)
+			continue
+		}
+
+		rawItems := resp.Data.Items
+		if len(rawItems) == 0 {
+			rawItems = resp.Data.Apps
+		}
+		if len(rawItems) == 0 {
+			rawItems = resp.Items
+		}
+
+		for _, raw := range rawItems {
+			item := storage.FeishuResourceItem{}
+			if v, ok := raw["id"]; ok && v != nil {
+				item.ID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := raw["resource_id"]; ok && v != nil {
+				item.ID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := raw["name"]; ok && v != nil {
+				item.Name = fmt.Sprintf("%v", v)
+			}
+			if v, ok := raw["resource_name"]; ok && v != nil {
+				item.Name = fmt.Sprintf("%v", v)
+			}
+			item.Type = resourceType
+			if v, ok := raw["type"]; ok && v != nil {
+				typeStr := fmt.Sprintf("%v", v)
+				if typeStr != "" {
+					item.Type = typeStr
+				}
+			}
+			if v, ok := raw["tag_ids"]; ok && v != nil {
+				item.TagIDs = fmt.Sprintf("%v", v)
+			}
+			if v, ok := raw["tag_names"]; ok && v != nil {
+				item.TagNames = fmt.Sprintf("%v", v)
+			}
+			if tags, ok := raw["tags"].([]interface{}); ok && len(tags) > 0 {
+				var tagIDs, tagNames []string
+				for _, t := range tags {
+					if tagMap, ok := t.(map[string]interface{}); ok {
+						if id, ok := tagMap["id"]; ok && id != nil {
+							tagIDs = append(tagIDs, fmt.Sprintf("%v", id))
+						}
+						if name, ok := tagMap["name"]; ok && name != nil {
+							tagNames = append(tagNames, fmt.Sprintf("%v", name))
+						}
+					}
+				}
+				if len(tagIDs) > 0 {
+					item.TagIDs = strings.Join(tagIDs, ",")
+				}
+				if len(tagNames) > 0 {
+					item.TagNames = strings.Join(tagNames, ",")
+				}
+			}
+			if item.ID == "" {
+				continue
+			}
+			if rawBytes, jsonErr := json.Marshal(raw); jsonErr == nil {
+				item.RawJSON = string(rawBytes)
+			}
+			allItems = append(allItems, item)
+		}
+	}
+
+	if len(allItems) == 0 {
+		logger.Warn("[资源清单] 未获取到任何资源")
+		return allItems, nil
+	}
+
+	logger.Info("[资源清单] 刷新完成",
+		zap.Int("总资源数", len(allItems)),
+	)
+
+	count, err := r.feishuResourcesRepo.ReplaceAll(allItems)
+	if err != nil {
+		return nil, fmt.Errorf("refresh feishu resources: store: %w", err)
+	}
+	return allItems[:count], nil
+}
+
+func safeBool(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case float64:
+		return val != 0
+	case int:
+		return val != 0
+	case string:
+		return val == "1" || val == "true" || val == "True" || val == "TRUE"
+	default:
+		return fmt.Sprintf("%v", v) == "1"
+	}
+}
+
+func (r *Runner) SyncFeishuDevices() ([]storage.FeishuDeviceItem, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("sync feishu devices: sealsuite client is nil")
+	}
+	if r.feishuDevicesRepo == nil {
+		return nil, fmt.Errorf("sync feishu devices: repository is nil")
+	}
+
+	allDevices := make([]storage.FeishuDeviceItem, 0)
+	maxPages := 500
+	offset := 0
+	limit := 100
+
+	for i := 0; i < maxPages; i++ {
+		params := map[string]string{
+			"limit":  fmt.Sprintf("%d", limit),
+			"offset": fmt.Sprintf("%d", offset),
+		}
+
+		_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/device/search", params, nil)
+		if err != nil {
+			return allDevices, fmt.Errorf("sync feishu devices: offset %d: %w", offset, err)
+		}
+
+		var resp struct {
+			Data struct {
+				Items     []map[string]interface{} `json:"items"`
+				Devices   []map[string]interface{} `json:"devices"`
+				PageToken string                   `json:"page_token"`
+			} `json:"data"`
+			Items     []map[string]interface{} `json:"items"`
+			Devices   []map[string]interface{} `json:"devices"`
+			PageToken string                   `json:"page_token"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return allDevices, fmt.Errorf("sync feishu devices: parse offset %d: %w", offset, err)
+		}
+
+		rawItems := resp.Data.Items
+		if len(rawItems) == 0 {
+			rawItems = resp.Data.Devices
+		}
+		if len(rawItems) == 0 {
+			rawItems = resp.Items
+		}
+		if len(rawItems) == 0 {
+			rawItems = resp.Devices
+		}
+
+		for _, raw := range rawItems {
+			device := storage.FeishuDeviceItem{}
+			deviceInfo, _ := raw["device_info"].(map[string]interface{})
+			getField := func(key string) (interface{}, bool) {
+				if v, ok := raw[key]; ok && v != nil {
+					return v, true
+				}
+				if deviceInfo != nil {
+					if v, ok := deviceInfo[key]; ok && v != nil {
+						return v, true
+					}
+				}
+				return nil, false
+			}
+			if v, ok := getField("did"); ok {
+				device.DID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("user_id"); ok {
+				device.UserID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("os"); ok {
+				device.OS = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("client_ip"); ok {
+				device.ClientIP = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("client_ip_location"); ok {
+				device.ClientIPLocation = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("device_status"); ok {
+				device.DeviceStatus = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("nic_type"); ok {
+				device.NICType = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("mac_addrs"); ok {
+				device.MacAddrs = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("is_vm"); ok {
+				device.IsVM = safeBool(v)
+			}
+			if v, ok := getField("serial_number"); ok {
+				device.SerialNumber = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("mac_addr"); ok {
+				device.MacAddr = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("is_virtual"); ok {
+				device.IsVirtual = safeBool(v)
+			}
+			if v, ok := getField("is_default"); ok {
+				device.IsDefault = safeBool(v)
+			}
+			if v, ok := getField("hdd_serial_numbers"); ok {
+				device.HDDSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("ssd_serial_numbers"); ok {
+				device.SSDSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("cpu_serial_number"); ok {
+				device.CPUSerialNumber = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("windows_ad_domain_name"); ok {
+				device.WindowsADDomainName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("groups_id"); ok {
+				device.GroupsID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("groups_name"); ok {
+				device.GroupsName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("groups_mode"); ok {
+				device.GroupsMode = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("device_type"); ok {
+				device.DeviceType = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("device_name"); ok {
+				device.DeviceName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("name"); ok {
+				if device.DeviceName == "" {
+					device.DeviceName = fmt.Sprintf("%v", v)
+				}
+			}
+			if v, ok := getField("full_name"); ok {
+				device.FullName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("user_name"); ok {
+				if device.FullName == "" {
+					device.FullName = fmt.Sprintf("%v", v)
+				}
+			}
+			if v, ok := getField("department_name"); ok {
+				device.DepartmentName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("mem_serial_numbers"); ok {
+				device.MemSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if device.DID != "" {
+				allDevices = append(allDevices, device)
+			}
+		}
+
+		if len(rawItems) == 0 {
+			break
+		}
+		offset += limit
+	}
+
+	count, err := r.feishuDevicesRepo.ReplaceAll(allDevices)
+	if err != nil {
+		return allDevices, fmt.Errorf("sync feishu devices: store: %w", err)
+	}
+
+	for i, device := range allDevices[:count] {
+		trustedStatus, _ := r.FetchDeviceTrustedStatus(device.DID)
+		if trustedStatus != "" {
+			allDevices[i].TrustedStatus = trustedStatus
+			_ = r.feishuDevicesRepo.UpdateTrustedStatus(device.DID, trustedStatus)
+		}
+	}
+
+	return allDevices[:count], nil
+}
+
+func (r *Runner) RefreshDeviceGroups() ([]storage.DeviceGroupItem, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("refresh device groups: sealsuite client is nil")
+	}
+	if r.deviceGroupsRepo == nil {
+		return nil, fmt.Errorf("refresh device groups: repository is nil")
+	}
+
+	_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/device/group/list", nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("refresh device groups: %w", err)
+	}
+
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Groups []map[string]interface{} `json:"groups"`
+			Total  int                      `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("refresh device groups: parse response: %w", err)
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("refresh device groups: api error code=%d message=%s", resp.Code, resp.Message)
+	}
+
+	rawItems := resp.Data.Groups
+
+	items := make([]storage.DeviceGroupItem, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item := storage.DeviceGroupItem{}
+		if v, ok := raw["id"]; ok && v != nil {
+			item.ID = fmt.Sprintf("%v", v)
+		}
+		if v, ok := raw["group_id"]; ok && v != nil {
+			item.ID = fmt.Sprintf("%v", v)
+		}
+		if v, ok := raw["name"]; ok && v != nil {
+			item.Name = fmt.Sprintf("%v", v)
+		}
+		if v, ok := raw["group_name"]; ok && v != nil {
+			item.Name = fmt.Sprintf("%v", v)
+		}
+		if item.ID == "" {
+			continue
+		}
+		if rawBytes, jsonErr := json.Marshal(raw); jsonErr == nil {
+			item.RawJSON = string(rawBytes)
+		}
+		items = append(items, item)
+	}
+
+	logger.Info("[设备分组] 刷新完成",
+		zap.Int("总分组数", len(items)),
+	)
+
+	count, err := r.deviceGroupsRepo.ReplaceAll(items)
+	if err != nil {
+		return nil, fmt.Errorf("refresh device groups: store: %w", err)
+	}
+	return items[:count], nil
+}
+
+func (r *Runner) GetDevicesByGroup(groupID string) (*storage.DeviceGroupDetail, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("get devices by group: sealsuite client is nil")
+	}
+	if r.feishuDevicesRepo == nil {
+		return nil, fmt.Errorf("get devices by group: repository is nil")
+	}
+
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil, fmt.Errorf("get devices by group: group_id is required")
+	}
+
+	allDevices := make([]storage.DeviceDetailItem, 0)
+	maxPages := 100
+	offset := 0
+	limit := 100
+	totalCount := 0
+
+	for i := 0; i < maxPages; i++ {
+		params := map[string]string{
+			"group_id": groupID,
+			"limit":    fmt.Sprintf("%d", limit),
+			"offset":   fmt.Sprintf("%d", offset),
+		}
+
+		_, respBody, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/device/search", params, nil)
+		if err != nil {
+			return nil, fmt.Errorf("get devices by group: offset %d: %w", offset, err)
+		}
+
+		var resp struct {
+			Data struct {
+				Items   []map[string]interface{} `json:"items"`
+				Devices []map[string]interface{} `json:"devices"`
+				Count   int                      `json:"count"`
+				Total   int                      `json:"total"`
+			} `json:"data"`
+			Items   []map[string]interface{} `json:"items"`
+			Devices []map[string]interface{} `json:"devices"`
+			Count   int                      `json:"count"`
+			Total   int                      `json:"total"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return nil, fmt.Errorf("get devices by group: parse offset %d: %w", offset, err)
+		}
+
+		rawItems := resp.Data.Items
+		if len(rawItems) == 0 {
+			rawItems = resp.Data.Devices
+		}
+		if len(rawItems) == 0 {
+			rawItems = resp.Items
+		}
+		if len(rawItems) == 0 {
+			rawItems = resp.Devices
+		}
+
+		if totalCount == 0 {
+			if resp.Data.Count > 0 {
+				totalCount = resp.Data.Count
+			} else if resp.Count > 0 {
+				totalCount = resp.Count
+			} else if resp.Data.Total > 0 {
+				totalCount = resp.Data.Total
+			} else if resp.Total > 0 {
+				totalCount = resp.Total
+			}
+		}
+
+		for _, raw := range rawItems {
+			device := storage.DeviceDetailItem{
+				GroupID: groupID,
+			}
+			deviceInfo, _ := raw["device_info"].(map[string]interface{})
+			getField := func(key string) (interface{}, bool) {
+				if v, ok := raw[key]; ok && v != nil {
+					return v, true
+				}
+				if deviceInfo != nil {
+					if v, ok := deviceInfo[key]; ok && v != nil {
+						return v, true
+					}
+				}
+				return nil, false
+			}
+			if v, ok := getField("did"); ok {
+				device.DID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("user_id"); ok {
+				device.UserID = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("device_name"); ok {
+				device.DeviceName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("name"); ok {
+				if device.DeviceName == "" {
+					device.DeviceName = fmt.Sprintf("%v", v)
+				}
+			}
+			if v, ok := getField("os"); ok {
+				device.OS = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("full_name"); ok {
+				device.FullName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("user_name"); ok {
+				if device.FullName == "" {
+					device.FullName = fmt.Sprintf("%v", v)
+				}
+			}
+			if v, ok := getField("department_name"); ok {
+				device.DepartmentName = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("device_status"); ok {
+				device.DeviceStatus = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("mac_addrs"); ok {
+				device.MacAddrs = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("serial_number"); ok {
+				device.SerialNumber = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("hdd_serial_numbers"); ok {
+				device.HDDSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("ssd_serial_numbers"); ok {
+				device.SSDSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("cpu_serial_number"); ok {
+				device.CPUSerialNumber = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("mem_serial_numbers"); ok {
+				device.MemSerialNumbers = fmt.Sprintf("%v", v)
+			}
+			if v, ok := getField("groups_name"); ok {
+				device.GroupName = fmt.Sprintf("%v", v)
+			}
+			if device.DID != "" {
+				allDevices = append(allDevices, device)
+			}
+		}
+
+		pageItems := len(rawItems)
+		if pageItems == 0 {
+			break
+		}
+
+		if totalCount > 0 && len(allDevices) >= totalCount {
+			break
+		}
+		offset += limit
+	}
+
+	if totalCount == 0 {
+		totalCount = len(allDevices)
+	}
+
+	detail := &storage.DeviceGroupDetail{
+		GroupID: groupID,
+		Count:   totalCount,
+		Items:   allDevices,
+	}
+
+	go func() {
+		for _, d := range allDevices {
+			item := storage.FeishuDeviceItem{
+				DID:              d.DID,
+				UserID:           d.UserID,
+				DeviceName:       d.DeviceName,
+				FullName:         d.FullName,
+				DepartmentName:   d.DepartmentName,
+				OS:               d.OS,
+				DeviceStatus:     d.DeviceStatus,
+				MacAddrs:         d.MacAddrs,
+				SerialNumber:     d.SerialNumber,
+				HDDSerialNumbers: d.HDDSerialNumbers,
+				SSDSerialNumbers: d.SSDSerialNumbers,
+				CPUSerialNumber:  d.CPUSerialNumber,
+				MemSerialNumbers: d.MemSerialNumbers,
+				GroupsID:         d.GroupID,
+				GroupsName:       d.GroupName,
+			}
+			_ = r.feishuDevicesRepo.Upsert(item)
+		}
+		logger.Info("[可信设备] 分组设备已存入数据库",
+			zap.String("分组ID", groupID),
+			zap.Int("设备数", len(allDevices)),
+		)
+	}()
+
+	return detail, nil
+}
+
+func (r *Runner) FetchDeviceTrustedStatus(did string) (string, error) {
+	if r.client == nil {
+		return "", fmt.Errorf("fetch device trusted status: sealsuite client is nil")
+	}
+
+	_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/device/detail", map[string]string{
+		"did": did,
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("fetch device trusted status: %w", err)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("decode device detail: %w", err)
+	}
+
+	if data, ok := resp["data"]; ok {
+		if dataMap, ok := data.(map[string]interface{}); ok {
+			if v, ok := dataMap["trusted_status"]; ok && v != nil {
+				return fmt.Sprintf("%v", v), nil
+			}
+		}
+	}
+	if v, ok := resp["trusted_status"]; ok && v != nil {
+		return fmt.Sprintf("%v", v), nil
+	}
+	return "", nil
+}
+
+func (r *Runner) ImportDevicesToFeishu() (int, error) {
+	return r.ImportDevicesToFeishuWithFilters([]string{}, []string{}, []string{}, "AND")
+}
+
+func (r *Runner) ImportDevicesToFeishuWithFilters(osList, trustedStatusList, groupList []string, logicMode string) (int, error) {
+	if r.feishuDevicesRepo == nil {
+		return 0, fmt.Errorf("import devices: repository is nil")
+	}
+
+	mappings, err := r.fieldMappingRepo.GetEnabledMappings()
+	if err != nil {
+		return 0, fmt.Errorf("import devices: get mappings: %w", err)
+	}
+	if len(mappings) == 0 {
+		return 0, fmt.Errorf("import devices: no enabled mappings")
+	}
+
+	devices, err := r.feishuDevicesRepo.ListMulti(osList, trustedStatusList, groupList, logicMode)
+	if err != nil {
+		return 0, fmt.Errorf("import devices: list devices: %w", err)
+	}
+
+	importCount := 0
+	for _, device := range devices {
+		payload := map[string]interface{}{}
+		for _, mapping := range mappings {
+			sourceValue := getDeviceFieldValue(device, mapping.SourceField)
+			if sourceValue != "" {
+				payload[mapping.TargetField] = sourceValue
+			}
+		}
+
+		if len(payload) == 0 {
+			continue
+		}
+
+		_, _, err := r.client.DoRaw(http.MethodPost, "https://fsopen.bytedance.net/open-apis/security_and_compliance/v2/device_records", nil, payload)
+		if err == nil {
+			importCount++
+		}
+	}
+
+	return importCount, nil
+}
+
+func getDeviceFieldValue(device storage.FeishuDeviceItem, fieldName string) string {
+	switch fieldName {
+	case "did":
+		return device.DID
+	case "user_id":
+		return device.UserID
+	case "os":
+		return device.OS
+	case "client_ip":
+		return device.ClientIP
+	case "client_ip_location":
+		return device.ClientIPLocation
+	case "device_status":
+		return device.DeviceStatus
+	case "nic_type":
+		return device.NICType
+	case "serial_number":
+		return device.SerialNumber
+	case "mac_addr":
+		return device.MacAddr
+	case "device_type":
+		return device.DeviceType
+	case "trusted_status":
+		return device.TrustedStatus
+	case "groups_name":
+		return device.GroupsName
+	default:
+		return ""
+	}
+}
+
+func (r *Runner) defaultWriteFeilianCIDRsV2(task storage.ExternalIPSyncTask, cidrs []string) error {
+	task = storage.NormalizeExternalIPSyncTask(task)
+
+	if r.client == nil {
+		logger.Error("[外部IP同步-写入] sealsuite client 未初始化",
+			zap.String("task_id", task.ID),
+		)
+		return fmt.Errorf("write feilian cidrs v2: sealsuite client is nil")
+	}
+	if len(cidrs) == 0 {
+		logger.Info("[外部IP同步-写入] CIDR列表为空，跳过写入",
+			zap.String("task_id", task.ID),
+		)
+		return nil
+	}
+
+	createMode := strings.ToLower(strings.TrimSpace(task.CreateMode))
+	logger.Info("[外部IP同步-写入] 准备调用飞连API",
+		zap.String("task_id", task.ID),
+		zap.String("create_mode", createMode),
+		zap.Int("cidr_count", len(cidrs)),
+	)
+
+	if createMode == storage.FeishuResourceCreateModeAdd {
+		newResourceName := strings.TrimSpace(task.NewResourceName)
+		if newResourceName == "" {
+			logger.Error("[外部IP同步-写入] 新增模式下new_resource_name为空",
+				zap.String("task_id", task.ID),
+			)
+			return fmt.Errorf("write feilian cidrs v2: new_resource_name is required for add mode")
+		}
+
+		logger.Info("[外部IP同步-写入] 调用新增资源接口",
+			zap.String("task_id", task.ID),
+			zap.String("api_path", "/api/open/v1/addr/management/add"),
+			zap.String("new_resource_name", newResourceName),
+			zap.Int("cidr_count", len(cidrs)),
+		)
+
+		_, body, err := r.client.DoRaw(http.MethodPost, "/api/open/v1/addr/management/add", nil, map[string]interface{}{
+			"name": newResourceName,
+			"type": "ip",
+			"ips":  cidrs,
+		})
+		if err != nil {
+			logger.Error("[外部IP同步-写入] 调用新增资源接口失败",
+				zap.String("task_id", task.ID),
+				zap.String("api_path", "/api/open/v1/addr/management/add"),
+				zap.Error(err),
+			)
+			return fmt.Errorf("write feilian cidrs v2: create resource: %w", err)
+		}
+
+		var resp map[string]interface{}
+		if jsonErr := json.Unmarshal(body, &resp); jsonErr != nil {
+			logger.Warn("[外部IP同步-写入] 解析响应JSON失败",
+				zap.String("task_id", task.ID),
+				zap.Error(jsonErr),
+			)
+			return nil
+		}
+
+		var newResourceID string
+		if data, ok := resp["data"]; ok {
+			if dataMap, ok := data.(map[string]interface{}); ok {
+				if v, ok := dataMap["resource_id"]; ok && v != nil {
+					newResourceID = fmt.Sprintf("%v", v)
+				}
+				if v, ok := dataMap["id"]; ok && v != nil {
+					newResourceID = fmt.Sprintf("%v", v)
+				}
+			}
+		}
+		if v, ok := resp["resource_id"]; ok && v != nil {
+			newResourceID = fmt.Sprintf("%v", v)
+		}
+
+		if newResourceID != "" {
+			logger.Info("[外部IP同步-写入] 新增资源成功，获取到resource_id",
+				zap.String("task_id", task.ID),
+				zap.String("new_resource_id", newResourceID),
+			)
+
+			if r.externalIPSyncRepo != nil {
+				existing, ok, getErr := r.externalIPSyncRepo.Get(task.ID)
+				if getErr != nil {
+					logger.Error("[外部IP同步-写入] 查询任务失败",
+						zap.String("task_id", task.ID),
+						zap.Error(getErr),
+					)
+				} else if !ok {
+					logger.Warn("[外部IP同步-写入] 任务不存在",
+						zap.String("task_id", task.ID),
+					)
+				} else {
+					existing.ResourceID = newResourceID
+					existing.CreateMode = storage.FeishuResourceCreateModeSelect
+					if upsertErr := r.externalIPSyncRepo.Upsert(existing); upsertErr != nil {
+						logger.Error("[外部IP同步-写入] 更新任务失败",
+							zap.String("task_id", task.ID),
+							zap.Error(upsertErr),
+						)
+					} else {
+						logger.Info("[外部IP同步-写入] 任务已更新为选择模式",
+							zap.String("task_id", task.ID),
+							zap.String("resource_id", newResourceID),
+						)
+					}
+				}
+			}
+		} else {
+			logger.Warn("[外部IP同步-写入] 新增资源成功但未获取到resource_id",
+				zap.String("task_id", task.ID),
+			)
+		}
+		return nil
+	}
+
+	if task.ResourceID == "" {
+		logger.Error("[外部IP同步-写入] 选择模式下resource_id为空",
+			zap.String("task_id", task.ID),
+		)
+		return fmt.Errorf("write feilian cidrs v2: resource_id is required for select mode")
+	}
+
+	apiPath := "/api/open/v1/addr/management/update"
+	if strings.TrimSpace(task.FeilianAPIPath) != "" && strings.TrimSpace(task.FeilianAPIPath) != "/api/open/v1/addr/management/add" {
+		apiPath = task.FeilianAPIPath
+	}
+
+	logger.Info("[外部IP同步-写入] 调用更新资源接口",
+		zap.String("task_id", task.ID),
+		zap.String("api_path", apiPath),
+		zap.String("resource_id", task.ResourceID),
+		zap.Int("cidr_count", len(cidrs)),
+	)
+
+	var resourceID interface{} = task.ResourceID
+	if idInt, err := strconv.Atoi(task.ResourceID); err == nil {
+		resourceID = idInt
+	}
+
+	_, err := r.client.Post(apiPath, map[string]interface{}{
+		"id":   resourceID,
+		"type": "ip",
+		"ips":  cidrs,
+	})
+	if err != nil {
+		logger.Error("[外部IP同步-写入] 调用更新资源接口失败",
+			zap.String("task_id", task.ID),
+			zap.String("api_path", apiPath),
+			zap.String("resource_id", task.ResourceID),
+			zap.Error(err),
+		)
+	} else {
+		logger.Info("[外部IP同步-写入] 更新资源成功",
+			zap.String("task_id", task.ID),
+			zap.String("resource_id", task.ResourceID),
+			zap.Int("cidr_count", len(cidrs)),
+		)
+	}
+	return err
 }
 
 func filterGoogleCIDRs(in googleIPRanges, version string) []string {
@@ -1164,7 +2270,7 @@ func applyJobStatusRecord(target *JobStatus, run service.RunLog) {
 func (r *Runner) executeComplexTaskStep(step storage.ComplexTaskStep, current interface{}) (interface{}, error) {
 	switch step.Type {
 	case "api_call":
-		targetType, targetID := normalizeTarget(asString(step.Config["target_type"]), asString(step.Config["target_id"]), asString(step.Config["draft_id"]))
+		targetType, targetID := NormalizeTarget(asString(step.Config["target_type"]), asString(step.Config["target_id"]), asString(step.Config["draft_id"]))
 		if targetType != "" && targetID != "" {
 			return r.executeTargetOutput(targetType, targetID)
 		}
@@ -1300,19 +2406,25 @@ func (r *Runner) refreshNextRun() {
 	if r.sched == nil {
 		return
 	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
 	for name := range r.status {
-		r.refreshNextRunFor(name)
+		r.refreshNextRunWith(name, r.status, name)
 	}
 	for id := range r.scheduleStatus {
-		r.refreshNextRunForSchedule(id)
+		r.refreshNextRunWith(r.scheduleEntryName(id), r.scheduleStatus, id)
 	}
 }
 
 func (r *Runner) refreshNextRunFor(name string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
 	r.refreshNextRunWith(name, r.status, name)
 }
 
 func (r *Runner) refreshNextRunForSchedule(id string) {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
 	r.refreshNextRunWith(r.scheduleEntryName(id), r.scheduleStatus, id)
 }
 
@@ -1402,6 +2514,19 @@ func coerceStringMap(m map[string]interface{}) map[string]string {
 	return out
 }
 
+// stringMapToIFMap 将 map[string]string 转为 map[string]interface{} 用于
+// api.ExecuteRequest 的 Query/PathParams 字段（该字段现在是 map[string]interface{}）。
+func stringMapToIFMap(m map[string]string) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func mapValue(input map[string]interface{}, key string) map[string]interface{} {
 	if input == nil {
 		return map[string]interface{}{}
@@ -1420,8 +2545,8 @@ func buildExecuteRequestFromMap(input map[string]interface{}) api.ExecuteRequest
 		TemplateID: firstNonEmpty(asString(input["template_id"])),
 		Method:     asString(input["method"]),
 		Path:       asString(input["path"]),
-		Query:      coerceStringMap(mapValue(input, "query")),
-		PathParams: coerceStringMap(mapValue(input, "path_params")),
+		Query:      stringMapToIFMap(coerceStringMap(mapValue(input, "query"))),
+		PathParams: stringMapToIFMap(coerceStringMap(mapValue(input, "path_params"))),
 		Body:       extractBody(mapValue(input, "body")),
 	}
 	if len(req.Body) == 0 {
@@ -1598,10 +2723,10 @@ func (r *Runner) resolveSelectedLLMConfig(overrides map[string]interface{}) (con
 	}
 	selectedCfg, err := r.resolveLLMConfigFromAPIID(id)
 	if err != nil {
-		return config.LLMRoleConfig{}, true, fmt.Errorf("指定的 LLM_API 不存在或已删除: %s", id)
+		return config.LLMRoleConfig{}, true, storage.NewValidationError(fmt.Sprintf("指定的 LLM_API 不存在或已删除: %s", id))
 	}
 	if !selectedCfg.Enabled {
-		return config.LLMRoleConfig{}, true, fmt.Errorf("指定的 LLM_API 已禁用: %s", id)
+		return config.LLMRoleConfig{}, true, storage.NewValidationError(fmt.Sprintf("指定的 LLM_API 已禁用: %s", id))
 	}
 	return applyLLMRoleOverrides(selectedCfg, overrides), true, nil
 }
@@ -1731,7 +2856,7 @@ func (r *Runner) executeTargetOutput(targetType, targetID string) (interface{}, 
 		if err != nil {
 			return nil, err
 		}
-		nextType, nextID := normalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
+		nextType, nextID := NormalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
 		return r.executeTargetOutput(nextType, nextID)
 	case "external_ip_sync":
 		if r.executeExternalIPSync == nil {
@@ -1801,14 +2926,14 @@ func (r *Runner) executeTargetOutputForSchedule(targetType, targetID string) (in
 		if err != nil {
 			return nil, err
 		}
-		nextType, nextID := normalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
+		nextType, nextID := NormalizeTarget(normalized.TargetType, normalized.TargetID, normalized.DraftID)
 		return r.executeTargetOutputForSchedule(nextType, nextID)
 	default:
 		return r.executeTargetOutput(targetType, targetID)
 	}
 }
 
-func normalizeTarget(targetType, targetID, draftID string) (string, string) {
+func NormalizeTarget(targetType, targetID, draftID string) (string, string) {
 	if targetType == "" && draftID != "" {
 		return "task_draft", draftID
 	}
@@ -1838,3 +2963,459 @@ func boolPtrIfTrue(v bool) *bool {
 
 // 用于让 go compiler 保留 cron import（当前未直接使用，但未来用于更精细 next_run）
 var _ cron.EntryID
+
+// ===================== DLP 文件误报分析 =====================
+
+type DLPSyncResult struct {
+	SyncedCount int    `json:"synced_count"`
+	SyncAt      string `json:"sync_at"`
+}
+
+type DLPAnalyzeResult struct {
+	AnalyzedCount int    `json:"analyzed_count"`
+	ExcludedCount int    `json:"excluded_count"`
+	KeptCount     int    `json:"kept_count"`
+	AnalyzedAt    string `json:"analyzed_at"`
+}
+
+func (r *Runner) SyncDLPEvents(maxItems int) (*DLPSyncResult, error) {
+	if r.dlpEventRepo == nil {
+		return nil, fmt.Errorf("dlp event repository is nil")
+	}
+
+	now := time.Now()
+
+	var startTime time.Time
+	if maxItems > 0 {
+		startTime = now.Add(-7 * 24 * time.Hour)
+	} else {
+		startTime = now.Add(-24 * time.Hour)
+	}
+
+	startTimeStr := startTime.Format(time.RFC3339)
+
+	if maxItems <= 0 {
+		maxItems = 0
+	}
+
+	items, err := r.fetchDLPEventsFromAPI(startTimeStr, maxItems)
+	if err != nil {
+		logger.Error("[DLP] 获取DLP事件失败", zap.Error(err))
+		return nil, err
+	}
+
+	synced := 0
+	for _, item := range items {
+		if err := r.dlpEventRepo.Upsert(item); err != nil {
+			logger.Warn("[DLP] 保存DLP事件失败", zap.String("id", item.ID), zap.Error(err))
+			continue
+		}
+		synced++
+	}
+
+	syncAt := now.Format(time.RFC3339)
+	if upErr := r.dlpEventRepo.UpdateSyncState(syncAt, synced); upErr != nil {
+		logger.Warn("[DLP] 更新同步状态失败", zap.Error(upErr))
+	}
+
+	return &DLPSyncResult{
+		SyncedCount: synced,
+		SyncAt:      syncAt,
+	}, nil
+}
+
+func (r *Runner) fetchDLPEventsFromAPI(startTime string, maxItems int) ([]storage.DLPEvent, error) {
+	results := make([]storage.DLPEvent, 0)
+	pageSize := 50
+	seenIDs := make(map[string]bool)
+
+	currentEndTime := time.Now().Format(time.RFC3339)
+	startTimeUnix := toUnixTime(startTime)
+
+	for {
+		endTimeUnix := toUnixTime(currentEndTime)
+
+		if endTimeUnix <= startTimeUnix {
+			break
+		}
+
+		query := map[string]string{
+			"start_time": fmt.Sprintf("%d", startTimeUnix),
+			"end_time":   fmt.Sprintf("%d", endTimeUnix),
+			"page_size":  fmt.Sprintf("%d", pageSize),
+		}
+
+		_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/security/edlp/events/list", query, nil)
+		if err != nil {
+			logger.Warn("[DLP] 调用飞连DLP事件API失败", zap.Error(err))
+			return results, nil
+		}
+
+		var resp struct {
+			Code    int                      `json:"code"`
+			Message string                   `json:"message"`
+			Data    interface{}              `json:"data"`
+			Items   []map[string]interface{} `json:"items"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			logger.Warn("[DLP] 解析DLP事件响应失败", zap.Error(err))
+			return results, nil
+		}
+
+		if resp.Code != 0 && resp.Code != 40000 {
+			logger.Warn("[DLP] API返回错误", zap.Int("code", resp.Code), zap.String("message", resp.Message))
+			return results, nil
+		}
+
+		items := resp.Items
+		if len(items) == 0 {
+			if resp.Data != nil {
+				if dataMap, ok := resp.Data.(map[string]interface{}); ok {
+					if itemsArr, ok2 := dataMap["items"].([]interface{}); ok2 {
+						for _, it := range itemsArr {
+							if m, ok3 := it.(map[string]interface{}); ok3 {
+								items = append(items, m)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		logger.Info("[DLP] 时间分段获取数据", zap.Int("item_count", len(items)), zap.String("end_time", currentEndTime))
+
+		if len(items) == 0 {
+			break
+		}
+
+		var earliestTime int64 = endTimeUnix
+
+		for _, item := range items {
+			event := dlpEventFromMap(item)
+			if event.ID != "" && !seenIDs[event.ID] {
+				seenIDs[event.ID] = true
+				results = append(results, event)
+
+				if event.EventTime != "" {
+					if t, err := time.Parse(time.RFC3339, event.EventTime); err == nil && t.Unix() < earliestTime {
+						earliestTime = t.Unix()
+					}
+				}
+				if eventUnix, ok := item["event_unix_time"].(float64); ok && int64(eventUnix) < earliestTime {
+					earliestTime = int64(eventUnix)
+				}
+			}
+		}
+
+		if maxItems > 0 && len(results) >= maxItems {
+			results = results[:maxItems]
+			break
+		}
+
+		if earliestTime >= endTimeUnix {
+			break
+		}
+
+		currentEndTime = time.Unix(earliestTime, 0).Format(time.RFC3339)
+	}
+
+	return results, nil
+}
+
+func dlpEventFromMap(m map[string]interface{}) storage.DLPEvent {
+	getStr := func(key string) string {
+		v, ok := m[key]
+		if !ok {
+			return ""
+		}
+		s, ok := v.(string)
+		if ok {
+			return s
+		}
+		return fmt.Sprintf("%v", v)
+	}
+
+	id := getStr("id")
+	if id == "" {
+		id = getStr("event_id")
+	}
+	if id == "" {
+		return storage.DLPEvent{}
+	}
+
+	rawJSON, _ := json.Marshal(m)
+
+	fileInfoName := getStr("file_info_name")
+	fileInfoPath := getStr("file_info_path")
+	fileInfoType := getStr("file_info_type")
+	leakWayAppName := getStr("leak_way_app_name")
+	eventTime := getStr("event_time")
+	userName := getStr("user_name")
+
+	if fileInfoName == "" || fileInfoPath == "" {
+		if fileInfo, ok := m["file_info"].(map[string]interface{}); ok {
+			if name, ok := fileInfo["name"].(string); ok {
+				fileInfoName = name
+			}
+			if path, ok := fileInfo["path"].(string); ok {
+				fileInfoPath = path
+			}
+			if fileType, ok := fileInfo["type"].(string); ok {
+				fileInfoType = fileType
+			}
+		}
+	}
+
+	if leakWayAppName == "" {
+		if leakWay, ok := m["leak_way"].(map[string]interface{}); ok {
+			if appName, ok := leakWay["app_name"].(string); ok {
+				leakWayAppName = appName
+			}
+		}
+	}
+
+	if eventTime == "" {
+		if eventUnixTime, ok := m["event_unix_time"].(float64); ok {
+			eventTime = time.Unix(int64(eventUnixTime), 0).Format(time.RFC3339)
+		}
+	}
+
+	if userName == "" {
+		if userInfo, ok := m["user_info"].(map[string]interface{}); ok {
+			if fullName, ok := userInfo["full_name"].(string); ok {
+				userName = fullName
+			}
+			if userId, ok := userInfo["user_id"].(string); ok {
+				if userName != "" {
+					userName += " (" + userId + ")"
+				} else {
+					userName = userId
+				}
+			}
+		}
+	}
+
+	return storage.DLPEvent{
+		ID:             id,
+		FileInfoName:   fileInfoName,
+		FileInfoPath:   fileInfoPath,
+		FileInfoType:   fileInfoType,
+		LeakWayAppName: leakWayAppName,
+		EventType:      getStr("event_type"),
+		UserID:         getStr("user_id"),
+		UserName:       userName,
+		DeviceID:       getStr("device_id"),
+		EventTime:      eventTime,
+		RawJSON:        string(rawJSON),
+	}
+}
+
+func (r *Runner) AnalyzeDLPEvents(maxItems int, reanalyzeRetained bool) (*DLPAnalyzeResult, error) {
+	if r.dlpEventRepo == nil || r.dlpAnalysisRepo == nil || r.dlpWhitelistRepo == nil {
+		return nil, fmt.Errorf("dlp repositories not initialized")
+	}
+
+	if maxItems <= 0 {
+		maxItems = 100
+	}
+
+	logger.Info("[DLP] 开始分析DLP事件", zap.Int("max_items", maxItems), zap.Bool("reanalyze_retained", reanalyzeRetained))
+
+	var events []storage.DLPEvent
+	var err error
+
+	if reanalyzeRetained {
+		events, err = r.dlpEventRepo.ListRetainedAlerts(maxItems)
+		if err != nil {
+			return nil, fmt.Errorf("获取保留告警事件失败: %w", err)
+		}
+		logger.Info("[DLP] 获取到保留告警事件", zap.Int("count", len(events)))
+	} else {
+		events, err = r.dlpEventRepo.ListUnafelyzed(maxItems)
+		if err != nil {
+			return nil, fmt.Errorf("获取未分析事件失败: %w", err)
+		}
+		logger.Info("[DLP] 获取到未分析事件", zap.Int("count", len(events)))
+	}
+
+	if len(events) == 0 {
+		return &DLPAnalyzeResult{AnalyzedAt: time.Now().Format(time.RFC3339)}, nil
+	}
+
+	llmCfg := r.cfg.LLM.Planner
+	logger.Info("[DLP] 使用LLM配置", zap.String("provider", llmCfg.Provider), zap.String("model", llmCfg.Model))
+	llmClient := llm.NewClient(llmCfg)
+
+	analyzed := 0
+	excluded := 0
+	kept := 0
+
+	for _, event := range events {
+		whitelistItem, whitelisted, _ := r.dlpWhitelistRepo.MatchFile(event.FileInfoPath, event.FileInfoName)
+		if whitelisted {
+			result := storage.DLPAnalysisResult{
+				ID:            "ana_" + event.ID,
+				EventID:       event.ID,
+				Category:      "whitelisted",
+				ShouldExclude: true,
+				Confidence:    1.0,
+				Reasoning:     "命中白名单规则，直接跳过分析",
+				Whitelisted:   true,
+				MatchType:     whitelistItem.MatchType,
+				MatchValue:    whitelistItem.MatchValue,
+			}
+			if err := r.dlpAnalysisRepo.Upsert(result); err != nil {
+				logger.Warn("[DLP] 保存分析结果失败", zap.String("event_id", event.ID), zap.Error(err))
+				continue
+			}
+			if err := r.dlpEventRepo.MarkAnalyzed(event.ID); err != nil {
+				logger.Warn("[DLP] 标记事件已分析失败", zap.String("event_id", event.ID), zap.Error(err))
+			}
+			analyzed++
+			excluded++
+			continue
+		}
+
+		result, err := r.analyzeSingleDLPEvent(llmClient, event)
+		if err != nil {
+			logger.Warn("[DLP] LLM分析事件失败", zap.String("event_id", event.ID), zap.Error(err))
+			result = storage.DLPAnalysisResult{
+				ID:            "ana_" + event.ID,
+				EventID:       event.ID,
+				Category:      "unknown",
+				ShouldExclude: false,
+				Confidence:    0.0,
+				Reasoning:     "LLM分析失败: " + err.Error(),
+			}
+		}
+
+		result.EventID = event.ID
+		result.ID = "ana_" + event.ID
+
+		if err := r.dlpAnalysisRepo.Upsert(result); err != nil {
+			logger.Warn("[DLP] 保存分析结果失败", zap.String("event_id", event.ID), zap.Error(err))
+			continue
+		}
+
+		if err := r.dlpEventRepo.MarkAnalyzed(event.ID); err != nil {
+			logger.Warn("[DLP] 标记事件已分析失败", zap.String("event_id", event.ID), zap.Error(err))
+		}
+
+		analyzed++
+		if result.ShouldExclude {
+			excluded++
+		} else {
+			kept++
+		}
+	}
+
+	analyzedAt := time.Now().Format(time.RFC3339)
+	if upErr := r.dlpEventRepo.UpdateAnalysisState(analyzedAt, analyzed); upErr != nil {
+		logger.Warn("[DLP] 更新分析状态失败", zap.Error(upErr))
+	}
+
+	return &DLPAnalyzeResult{
+		AnalyzedCount: analyzed,
+		ExcludedCount: excluded,
+		KeptCount:     kept,
+		AnalyzedAt:    analyzedAt,
+	}, nil
+}
+
+func (r *Runner) analyzeSingleDLPEvent(client *llm.Client, event storage.DLPEvent) (storage.DLPAnalysisResult, error) {
+	systemPrompt := `你是一个文件分类助手。请根据给定的文件信息，判断该文件是否属于用户个人文件，还是属于操作系统、软件配置、日志、缓存等非用户个人文件。
+
+分类标签：
+- user_personal: 用户个人文件（文档、照片、项目资料等）
+- os_system: 操作系统文件
+- app_config: 软件配置文件
+- app_log: 软件日志文件
+- cache_temp: 缓存/临时文件
+- app_data: 软件运行数据（非直接面向用户的内部数据）
+- unknown: 无法判断
+
+判断原则：宁可错判为用户文件（should_exclude=false），也不要误判为系统/软件文件。不确定时返回 unknown 且 should_exclude=false。
+
+请严格以 JSON 格式输出，包含以下字段：
+- category: 分类标签
+- should_exclude: 是否应排除（不属于用户个人文件）
+- confidence: 置信度（0-1之间的浮点数）
+- reasoning: 推理依据（简短中文说明）`
+
+	userPrompt := fmt.Sprintf(`请分析以下文件信息：
+
+文件名: %s
+文件路径: %s
+文件类型: %s
+泄露途径应用: %s
+
+请判断该文件是否属于用户个人文件。`,
+		event.FileInfoName, event.FileInfoPath, event.FileInfoType, event.LeakWayAppName)
+
+	resp, err := client.Chat(llm.ChatRequest{
+		SystemPrompt: systemPrompt,
+		Prompt:       userPrompt,
+	})
+	if err != nil {
+		return storage.DLPAnalysisResult{}, err
+	}
+
+	content := resp.Content
+	content = extractJSONFromContent(content)
+
+	var result struct {
+		Category      string  `json:"category"`
+		ShouldExclude bool    `json:"should_exclude"`
+		Confidence    float64 `json:"confidence"`
+		Reasoning     string  `json:"reasoning"`
+	}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		logger.Warn("[DLP] 解析LLM响应失败", zap.String("content", content), zap.Error(err))
+		return storage.DLPAnalysisResult{
+			Category:      "unknown",
+			ShouldExclude: false,
+			Confidence:    0.0,
+			Reasoning:     "LLM响应解析失败，默认视为用户文件",
+		}, nil
+	}
+
+	return storage.DLPAnalysisResult{
+		Category:      result.Category,
+		ShouldExclude: result.ShouldExclude,
+		Confidence:    result.Confidence,
+		Reasoning:     result.Reasoning,
+	}, nil
+}
+
+func toUnixTime(timeStr string) int64 {
+	t, err := time.Parse(time.RFC3339, timeStr)
+	if err != nil {
+		t, err = time.Parse("2006-01-02 15:04:05", timeStr)
+		if err != nil {
+			return time.Now().Unix()
+		}
+	}
+	return t.Unix()
+}
+
+func extractJSONFromContent(content string) string {
+	content = strings.TrimSpace(content)
+
+	if strings.HasPrefix(content, "```json") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	} else if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		content = content[start : end+1]
+	}
+
+	return content
+}

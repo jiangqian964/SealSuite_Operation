@@ -3,6 +3,7 @@
 package logger
 
 import (
+	"fmt"
 	"os" // 操作系统接口，用于程序退出
 
 	"go.uber.org/zap"         // Uber 开源的高性能日志库
@@ -135,4 +136,20 @@ func Fatal(msg string, fields ...zap.Field) {
 	Get().Fatal(msg, fields...)
 	// 日志输出后立即退出程序，状态码为 1
 	os.Exit(1)
+}
+
+// Print 输出普通日志，在 logger 初始化前使用 fmt 输出，初始化后使用 Info 级别
+// 用于启动阶段的进度输出
+// 参数:
+//
+//	msg - 日志消息内容
+//	fields - 结构化字段，可变参数
+func Print(msg string, fields ...zap.Field) {
+	if globalLogger == nil {
+		// logger 未初始化时，使用 fmt 输出到控制台
+		fmt.Println(msg)
+	} else {
+		// logger 初始化后，使用 Info 级别
+		Get().Info(msg, fields...)
+	}
 }

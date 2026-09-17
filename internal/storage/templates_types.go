@@ -21,6 +21,9 @@ type Template struct {
 	PathParamsSchema map[string]interface{} `yaml:"path_params_schema,omitempty" json:"path_params_schema,omitempty"`
 	BodySchema       map[string]interface{} `yaml:"body_schema,omitempty" json:"body_schema,omitempty"`
 
+	DefaultQuery map[string]string      `yaml:"default_query,omitempty" json:"default_query,omitempty"`
+	DefaultBody  map[string]interface{} `yaml:"default_body,omitempty" json:"default_body,omitempty"`
+
 	DryRunQueryParam string `yaml:"dry_run_query_param,omitempty" json:"dry_run_query_param,omitempty"`
 }
 

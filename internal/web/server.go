@@ -20,6 +20,7 @@ import (
 	"sealsuite-operation/internal/config"
 	appdb "sealsuite-operation/internal/db"
 	"sealsuite-operation/internal/llm"
+	"sealsuite-operation/internal/logger"
 	"sealsuite-operation/internal/repository"
 	sqliteRepo "sealsuite-operation/internal/repository/sqlite"
 	"sealsuite-operation/internal/runner"
@@ -30,6 +31,7 @@ import (
 	"sealsuite-operation/internal/webhook"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 )
 
 func NewServer(cfg *config.Config, r *runner.Runner) (*http.Server, error) {
@@ -90,17 +92,29 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		return nil, err
 	}
 	var (
-		taskDraftRepo      *sqliteRepo.TaskDraftRepository
-		scheduleRepo       *sqliteRepo.ScheduleRepository
-		legacyJobRepo      repository.LegacyJobRepository
-		connectionRepo     *sqliteRepo.ConnectionsRepository
-		llmAPIRepo         *sqliteRepo.LLMAPIRepository
-		webhookRepo        *sqliteRepo.WebhookRepository
-		templateRepo       *sqliteRepo.TemplateRepository
-		outputTemplateRepo *sqliteRepo.OutputTemplateRepository
-		complexTaskRepo    *sqliteRepo.ComplexTaskRepository
-		externalIPSyncRepo *sqliteRepo.ExternalIPSyncTaskRepository
-		jobRunsRepo        *sqliteRepo.JobRunsRepository
+		taskDraftRepo       *sqliteRepo.TaskDraftRepository
+		scheduleRepo        *sqliteRepo.ScheduleRepository
+		legacyJobRepo       repository.LegacyJobRepository
+		connectionRepo      *sqliteRepo.ConnectionsRepository
+		llmAPIRepo          *sqliteRepo.LLMAPIRepository
+		feishuAPIRepo       *sqliteRepo.FeishuAPIRepository
+		feishuResourcesRepo *sqliteRepo.FeishuResourcesRepository
+		feishuDevicesRepo   *sqliteRepo.FeishuDevicesRepository
+		deviceGroupsRepo    *sqliteRepo.DeviceGroupsRepository
+		fieldMappingRepo    *sqliteRepo.FieldMappingRepository
+		dlpEventRepo        *sqliteRepo.DLPEventRepository
+		dlpAnalysisRepo     *sqliteRepo.DLPAnalysisRepository
+		dlpWhitelistRepo    *sqliteRepo.DLPWhitelistRepository
+		ztnaLogRepo         *sqliteRepo.ZTNAAccessLogRepository
+		ztnaStatsRepo       *sqliteRepo.ZTNAAccessStatsRepository
+		ztnaAnalysisRepo    *sqliteRepo.ZTNAAnalysisRepository
+		ztnaTaskStateRepo   *sqliteRepo.ZTNATaskStateRepository
+		webhookRepo         *sqliteRepo.WebhookRepository
+		templateRepo        *sqliteRepo.TemplateRepository
+		outputTemplateRepo  *sqliteRepo.OutputTemplateRepository
+		complexTaskRepo     *sqliteRepo.ComplexTaskRepository
+		externalIPSyncRepo  *sqliteRepo.ExternalIPSyncTaskRepository
+		jobRunsRepo         *sqliteRepo.JobRunsRepository
 	)
 	if appDB != nil {
 		taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
@@ -108,6 +122,18 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		legacyJobRepo = sqliteRepo.NewLegacyJobRepository(appDB)
 		connectionRepo = sqliteRepo.NewConnectionsRepository(appDB)
 		llmAPIRepo = sqliteRepo.NewLLMAPIRepository(appDB)
+		feishuAPIRepo = sqliteRepo.NewFeishuAPIRepository(appDB)
+		feishuResourcesRepo = sqliteRepo.NewFeishuResourcesRepository(appDB)
+		feishuDevicesRepo = sqliteRepo.NewFeishuDevicesRepository(appDB)
+		deviceGroupsRepo = sqliteRepo.NewDeviceGroupsRepository(appDB)
+		fieldMappingRepo = sqliteRepo.NewFieldMappingRepository(appDB)
+		dlpEventRepo = sqliteRepo.NewDLPEventRepository(appDB)
+		dlpAnalysisRepo = sqliteRepo.NewDLPAnalysisRepository(appDB)
+		dlpWhitelistRepo = sqliteRepo.NewDLPWhitelistRepository(appDB)
+		ztnaLogRepo = sqliteRepo.NewZTNAAccessLogRepository(appDB)
+		ztnaStatsRepo = sqliteRepo.NewZTNAAccessStatsRepository(appDB)
+		ztnaAnalysisRepo = sqliteRepo.NewZTNAAnalysisRepository(appDB)
+		ztnaTaskStateRepo = sqliteRepo.NewZTNATaskStateRepository(appDB)
 		webhookRepo = sqliteRepo.NewWebhookRepository(appDB)
 		templateRepo = sqliteRepo.NewTemplateRepository(appDB)
 		outputTemplateRepo = sqliteRepo.NewOutputTemplateRepository(appDB)
@@ -164,6 +190,13 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 
 	loadLLMAPIs := func() (*storage.LLMAPIFile, error) {
 		return loadLLMAPIsFromRepo(llmAPIRepo)
+	}
+
+	loadFeishuAPIs := func() (*storage.FeishuAPIFile, error) {
+		if feishuAPIRepo == nil {
+			return nil, fmt.Errorf("feishu api repository is nil")
+		}
+		return feishuAPIRepo.Load()
 	}
 
 	loadWebhooks := func() (*storage.WebhookFile, error) {
@@ -273,6 +306,10 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			if contentType != "" {
 				w.Header().Set("Content-Type", contentType)
 			}
+			// 添加缓存控制头，强制浏览器每次获取最新版本
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			_, _ = w.Write(b)
 		}
 	}
@@ -325,7 +362,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveTaskDraft(draft); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -352,7 +389,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveTaskDraft(draft); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -372,7 +409,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := taskDraftRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -487,7 +524,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveJobSchedule(sched); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -515,7 +552,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveJobSchedule(sched); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -530,7 +567,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			} else if ok {
-				targetType, targetID := normalizeTarget(sched.TargetType, sched.TargetID, sched.DraftID)
+				targetType, targetID := runner.NormalizeTarget(sched.TargetType, sched.TargetID, sched.DraftID)
 				if targetType == "external_ip_sync" && targetID != "" {
 					refs, err := referencedSchedulesByTarget(scheduleRepo, targetType, targetID, id)
 					if err != nil {
@@ -542,12 +579,12 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				}
 			}
 			if err := scheduleRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			if shouldDeleteExternalTask {
 				if err := deleteExternalIPSyncTask(externalTaskID); err != nil {
-					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 					return
 				}
 			}
@@ -559,7 +596,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			id := chi.URLParam(req, "id")
 			delivery, err := r.RunScheduleOnce(req.Context(), id)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -601,7 +638,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveExternalIPSyncTask(task); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeErrorJSON(w, err, nil)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -627,7 +664,392 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/external-ip-sync-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			if err := deleteExternalIPSyncTask(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Post("/external-ip-sync-tasks/{id}/run", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner is nil"})
+				return
+			}
+			summary, err := r.RunExternalIPSyncTask(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"summary": summary,
+			})
+		})
+
+		// --- feishu resources: 飞连资源清单缓存 ---
+		apiR.Get("/feishu-resources", func(w http.ResponseWriter, req *http.Request) {
+			if feishuResourcesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			typeFilter := strings.TrimSpace(req.URL.Query().Get("type"))
+			items, err := feishuResourcesRepo.List(typeFilter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			state, _ := feishuResourcesRepo.GetState()
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":            items,
+				"count":            len(items),
+				"last_refresh_at":  state.LastRefreshAt,
+				"schedule_enabled": state.ScheduleEnabled,
+			})
+		})
+
+		apiR.Post("/feishu-resources/refresh", func(w http.ResponseWriter, req *http.Request) {
+			if feishuResourcesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			items, err := r.RefreshFeishuResources()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			now := time.Now().Format(time.RFC3339)
+			state, _ := feishuResourcesRepo.GetState()
+			if upErr := feishuResourcesRepo.UpdateState(now, len(items), nil); upErr != nil {
+				logger.Error("[资源清单] 更新刷新状态失败", zap.Error(upErr))
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":               true,
+				"items":            items,
+				"count":            len(items),
+				"last_refresh_at":  now,
+				"schedule_enabled": state.ScheduleEnabled,
+			})
+		})
+
+		apiR.Post("/feishu-resources/schedule", func(w http.ResponseWriter, req *http.Request) {
+			if feishuResourcesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := feishuResourcesRepo.UpdateState("", 0, &body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "schedule_enabled": body.Enabled})
+		})
+
+		apiR.Get("/feishu-resources/:resource_id", func(w http.ResponseWriter, req *http.Request) {
+			if feishuResourcesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			resourceID := chi.URLParam(req, "resource_id")
+			if resourceID == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "resource_id is required"})
+				return
+			}
+			item, found, err := feishuResourcesRepo.Get(resourceID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !found {
+				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "resource not found"})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"item":  item,
+				"cidrs": []string{},
+			})
+		})
+
+		// --- feishu devices: 可信设备 ---
+		apiR.Get("/feishu-devices", func(w http.ResponseWriter, req *http.Request) {
+			if feishuDevicesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			osFilter := strings.TrimSpace(req.URL.Query().Get("os"))
+			trustedStatusFilter := strings.TrimSpace(req.URL.Query().Get("trusted_status"))
+			groupFilter := strings.TrimSpace(req.URL.Query().Get("group"))
+			items, err := feishuDevicesRepo.List(osFilter, trustedStatusFilter, groupFilter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			state, _ := feishuDevicesRepo.GetState()
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":                    items,
+				"count":                    len(items),
+				"last_sync_at":             state.LastSyncAt,
+				"last_sync_count":          state.LastSyncCount,
+				"schedule_enabled":         state.ScheduleEnabled,
+				"schedule_interval":        state.ScheduleInterval,
+				"last_import_at":           state.LastImportAt,
+				"last_import_count":        state.LastImportCount,
+				"import_schedule_enabled":  state.ImportScheduleEnabled,
+				"import_schedule_interval": state.ImportScheduleInterval,
+			})
+		})
+
+		apiR.Get("/feishu-devices/filters", func(w http.ResponseWriter, req *http.Request) {
+			if feishuDevicesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			osList, _ := feishuDevicesRepo.GetDistinctOS()
+			groupsList, _ := feishuDevicesRepo.GetDistinctGroups()
+			statusList, _ := feishuDevicesRepo.GetDistinctTrustedStatus()
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"os_options":             osList,
+				"group_options":          groupsList,
+				"trusted_status_options": statusList,
+			})
+		})
+
+		apiR.Post("/feishu-devices/sync", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			items, err := r.SyncFeishuDevices()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			now := time.Now().Format(time.RFC3339)
+			if feishuDevicesRepo != nil {
+				state, _ := feishuDevicesRepo.GetState()
+				state.LastSyncAt = now
+				state.LastSyncCount = len(items)
+				_ = feishuDevicesRepo.UpdateState(state)
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"count":   len(items),
+				"sync_at": now,
+			})
+		})
+
+		apiR.Post("/feishu-devices/sync-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if feishuDevicesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled  bool   `json:"enabled"`
+				Interval string `json:"interval"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			state, _ := feishuDevicesRepo.GetState()
+			state.ScheduleEnabled = body.Enabled
+			state.ScheduleInterval = body.Interval
+			if err := feishuDevicesRepo.UpdateState(state); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "schedule_enabled": body.Enabled, "interval": body.Interval})
+		})
+
+		apiR.Post("/feishu-devices/import", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				OSList            []string `json:"os_list"`
+				TrustedStatusList []string `json:"trusted_status_list"`
+				GroupList         []string `json:"group_list"`
+				LogicMode         string   `json:"logic_mode"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid request body: " + err.Error()})
+				return
+			}
+			cleanStrList := func(list []string) []string {
+				out := make([]string, 0, len(list))
+				for _, v := range list {
+					v = strings.TrimSpace(v)
+					if v != "" && v != "*" {
+						out = append(out, v)
+					}
+				}
+				return out
+			}
+			osList := cleanStrList(body.OSList)
+			trustedList := cleanStrList(body.TrustedStatusList)
+			groupList := cleanStrList(body.GroupList)
+			logicMode := strings.ToUpper(strings.TrimSpace(body.LogicMode))
+			if logicMode != "OR" {
+				logicMode = "AND"
+			}
+			count, err := r.ImportDevicesToFeishuWithFilters(osList, trustedList, groupList, logicMode)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			now := time.Now().Format(time.RFC3339)
+			if feishuDevicesRepo != nil {
+				state, _ := feishuDevicesRepo.GetState()
+				state.LastImportAt = now
+				state.LastImportCount = count
+				_ = feishuDevicesRepo.UpdateState(state)
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "imported_count": count, "import_at": now})
+		})
+
+		apiR.Post("/feishu-devices/import-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if feishuDevicesRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled  bool   `json:"enabled"`
+				Interval string `json:"interval"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			state, _ := feishuDevicesRepo.GetState()
+			state.ImportScheduleEnabled = body.Enabled
+			state.ImportScheduleInterval = body.Interval
+			if err := feishuDevicesRepo.UpdateState(state); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "import_schedule_enabled": body.Enabled, "interval": body.Interval})
+		})
+
+		// --- device groups: 设备分组 ---
+		apiR.Get("/device-groups", func(w http.ResponseWriter, req *http.Request) {
+			if deviceGroupsRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			items, err := deviceGroupsRepo.List()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			state, _ := deviceGroupsRepo.GetState()
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":              items,
+				"count":              len(items),
+				"last_refresh_at":    state.LastRefreshAt,
+				"last_refresh_count": state.LastRefreshCount,
+			})
+		})
+
+		apiR.Post("/device-groups/refresh", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			items, err := r.RefreshDeviceGroups()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			now := time.Now().Format(time.RFC3339)
+			if deviceGroupsRepo != nil {
+				_ = deviceGroupsRepo.UpdateState(now, len(items))
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":         true,
+				"items":      items,
+				"count":      len(items),
+				"refresh_at": now,
+			})
+		})
+
+		apiR.Get("/device-groups/{id}/devices", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			detail, err := r.GetDevicesByGroup(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":       true,
+				"group_id": detail.GroupID,
+				"count":    detail.Count,
+				"items":    detail.Items,
+			})
+		})
+
+		// --- field mappings: 字段映射 ---
+		apiR.Get("/field-mappings", func(w http.ResponseWriter, req *http.Request) {
+			if fieldMappingRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			items, err := fieldMappingRepo.List()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": items, "count": len(items)})
+		})
+
+		apiR.Post("/field-mappings", func(w http.ResponseWriter, req *http.Request) {
+			if fieldMappingRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var item storage.FieldMappingItem
+			if err := json.NewDecoder(req.Body).Decode(&item); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := fieldMappingRepo.Upsert(item); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Delete("/field-mappings/{id}", func(w http.ResponseWriter, req *http.Request) {
+			if fieldMappingRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			if err := fieldMappingRepo.Delete(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Post("/field-mappings/bootstrap", func(w http.ResponseWriter, req *http.Request) {
+			if fieldMappingRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			if err := fieldMappingRepo.BootstrapDefaults(); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -729,7 +1151,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := outputTemplateRepo.Upsert(item); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -738,7 +1160,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/output-templates/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			if err := outputTemplateRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -794,7 +1216,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveComplexTask(task); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -820,7 +1242,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := saveComplexTask(task); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -829,7 +1251,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/complex-tasks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			if err := deleteComplexTask(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -900,7 +1322,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			}
 
 			if err := configStore.UpdateSealsuiteConnection(clean); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -932,7 +1354,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				CreatedAt:   createdAt,
 			}
 			if err := connectionRepo.AddAndActivate(connItem); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -951,7 +1373,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := connectionRepo.AddAndActivate(*it); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -964,7 +1386,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				"secret_key": "", // keep
 			}
 			if err := configStore.UpdateSealsuiteConnection(clean); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -988,7 +1410,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := connectionRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -1071,7 +1493,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				SystemPrompt:    firstNonEmptyString(in["system_prompt"], ""),
 			}
 			if err := llmAPIRepo.UpsertAndMaybeActivate(item, false); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -1087,7 +1509,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 					return
 				}
 				if err := configStore.UpdateLLMConfig(mapSingleLLMAPIToRuntimePayload(*stored)); err != nil {
-					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 					return
 				}
 				if err := hotReloadRuntime(); err != nil {
@@ -1095,7 +1517,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 					return
 				}
 				if err := llmAPIRepo.UpsertAndMaybeActivate(*stored, true); err != nil {
-					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 					return
 				}
 			}
@@ -1131,7 +1553,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := configStore.UpdateLLMConfig(mapSingleLLMAPIToRuntimePayload(*item)); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			if err := hotReloadRuntime(); err != nil {
@@ -1139,7 +1561,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := llmAPIRepo.UpsertAndMaybeActivate(*item, true); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "active_id": id})
@@ -1148,10 +1570,163 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/settings/llm/apis/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			if err := llmAPIRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		// --- feishu apis ---
+		apiR.Get("/settings/feishu-apis", func(w http.ResponseWriter, req *http.Request) {
+			file, err := loadFeishuAPIs()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			items := make([]map[string]interface{}, 0, len(file.Items))
+			for _, item := range file.Items {
+				masked := map[string]interface{}{
+					"id":         item.ID,
+					"name":       item.Name,
+					"app_id":     item.AppID,
+					"base_url":   item.BaseURL,
+					"enabled":    item.Enabled,
+					"created_at": item.CreatedAt,
+				}
+				items = append(items, masked)
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"active_id": file.ActiveID,
+				"items":     items,
+			})
+		})
+
+		apiR.Get("/settings/feishu-apis/{id}", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			item, ok, err := feishuAPIRepo.Get(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "feishu api not found"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"id":         item.ID,
+				"name":       item.Name,
+				"app_id":     item.AppID,
+				"base_url":   item.BaseURL,
+				"enabled":    item.Enabled,
+				"created_at": item.CreatedAt,
+			})
+		})
+
+		apiR.Post("/settings/feishu-apis", func(w http.ResponseWriter, req *http.Request) {
+			var in map[string]interface{}
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			id := strings.TrimSpace(firstNonEmptyString(in["id"], ""))
+			name := strings.TrimSpace(firstNonEmptyString(in["name"], ""))
+			if id == "" || name == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "id/name required"})
+				return
+			}
+			activate := boolFromAny(in["activate"], false) || boolFromAny(in["active"], false)
+
+			item := storage.FeishuAPIItem{
+				ID:        id,
+				Name:      name,
+				AppID:     strings.TrimSpace(firstNonEmptyString(in["app_id"], "")),
+				AppSecret: firstNonEmptyString(in["app_secret"], ""),
+				BaseURL:   strings.TrimSpace(firstNonEmptyString(in["base_url"], "")),
+				Enabled:   boolFromAny(in["enabled"], true),
+			}
+			if item.BaseURL == "" {
+				item.BaseURL = "https://open.feishu.cn"
+			}
+			if err := feishuAPIRepo.UpsertAndMaybeActivate(item, activate); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok": true,
+				"id": id,
+			})
+		})
+
+		apiR.Post("/settings/feishu-apis/{id}/activate", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if _, err := feishuAPIRepo.Activate(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "active_id": id})
+		})
+
+		apiR.Delete("/settings/feishu-apis/{id}", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if err := feishuAPIRepo.Delete(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Post("/settings/feishu-apis/test", func(w http.ResponseWriter, req *http.Request) {
+			var in map[string]interface{}
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			appID := strings.TrimSpace(firstNonEmptyString(in["app_id"], ""))
+			appSecret := firstNonEmptyString(in["app_secret"], "")
+			baseURL := strings.TrimSpace(firstNonEmptyString(in["base_url"], ""))
+			if appID == "" || appSecret == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "app_id/app_secret required"})
+				return
+			}
+			if baseURL == "" {
+				baseURL = "https://open.feishu.cn"
+			}
+
+			// 获取 tenant_access_token 用于验证
+			tokenURL := strings.TrimRight(baseURL, "/") + "/open-apis/auth/v3/tenant_access_token/internal"
+			payload, _ := json.Marshal(map[string]string{
+				"app_id":     appID,
+				"app_secret": appSecret,
+			})
+			ctx, cancel := context.WithTimeout(req.Context(), 15*time.Second)
+			defer cancel()
+			httpReq, err := http.NewRequestWithContext(ctx, "POST", tokenURL, bytes.NewReader(payload))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Do(httpReq)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "failed to read response body"})
+				return
+			}
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				parsed = map[string]interface{}{"raw": string(body)}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":          true,
+				"http_status": resp.StatusCode,
+				"response":    parsed,
+			})
 		})
 
 		apiR.Get("/settings/webhooks", func(w http.ResponseWriter, req *http.Request) {
@@ -1192,7 +1767,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := webhookRepo.Upsert(item); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": item.ID})
@@ -1201,7 +1776,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/settings/webhooks/{id}", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			if err := webhookRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -1313,7 +1888,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			}
 			clean := sanitizeLLMConfigPayload(in)
 			if err := configStore.UpdateLLMConfig(clean); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			if err := hotReloadRuntime(); err != nil {
@@ -1384,7 +1959,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				}
 			}
 			if err := configStore.UpdateSealsuiteConnection(clean); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 
@@ -1426,19 +2001,14 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				tmp.SecretKey = v
 			}
 
-			tf, err := loadTemplates()
-			if err != nil {
+			// 即使探测不再依赖模板，也在处理流程早期加载一次以暴露数据库问题
+			if _, err := loadTemplates(); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
-			}
-			tmap := map[string]storage.Template{}
-			for _, t := range tf.Templates {
-				tmap[t.ID] = t
 			}
 
 			tmpClient := sealsuite.NewClient(&tmp)
 			tmpClient.SetMockMode(false)
-			exec := api.NewExecutor(tmpClient, tmap)
 
 			// 1) 先显式获取 token（用于展示）
 			token, exp, tokErr := tmpClient.FetchAccessToken()
@@ -1448,34 +2018,38 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				tokenPreview = mask(token)
 			}
 
-			// 2) probe：只有 tokenOK 才进行业务探测
+			// 2) probe：只有 tokenOK 才进行业务探测。
+			// 探测目的：验证"token 有效 + 网络可达 + 飞连服务端可响应业务 API"。
+			// 判定标准：
+			//   · HTTP 状态码为 2xx 且响应中包含 `code` 字段 → 说明飞连服务端已接受 token 并返回业务响应，
+			//     此时 `code` 非 0 只意味着"该 API 缺参数"（飞连对无 token 的请求会返回 HTTP 401，而不是 HTTP 200 + code:40000），
+			//     因此不作为连接失败判定。
+			//   · HTTP 4xx/5xx、网络超时、DNS 失败 → probe 失败。
+			// 探测端点使用飞连资源清单 GET /api/open/v1/addr/management/list——无需额外参数即可返回 code 字段。
 			probeOK := false
 			var probeResult interface{} = nil
 			var probeError string
 			if tokenOK {
-				// 优先用 users_list；如果模板文件不包含该模板，则使用任意一个已有模板做探测，
-				// 避免落到硬编码的 /api/v1/users（该路径在飞连环境中可能不存在，从而造成“误报失败”）。
-				probeTplID := ""
-				if _, ok := tmap["users_list"]; ok {
-					probeTplID = "users_list"
-				} else if len(tmap) > 0 {
-					ids := make([]string, 0, len(tmap))
-					for id := range tmap {
-						ids = append(ids, id)
-					}
-					sort.Strings(ids)
-					probeTplID = ids[0]
+				status, raw, err := tmpClient.DoRaw(http.MethodGet, "/api/open/v1/addr/management/list", nil, nil)
+				if len(raw) > 0 {
+					probeResult = json.RawMessage(raw)
 				}
-
-				if probeTplID == "" {
-					probeError = "skip probe because no templates available"
+				if err != nil {
+					probeError = err.Error()
+				} else if status < 200 || status >= 300 {
+					// HTTP 层面非 2xx —— 通常是 token 失效（401）或端点不可用
+					probeError = fmt.Sprintf("http status %d", status)
 				} else {
-					out, err := exec.Execute(api.ExecuteRequest{TemplateID: probeTplID})
-					if err != nil {
-						probeError = err.Error()
+					// HTTP 2xx：只要响应里能解析出 code 字段（无论值），就证明 token 有效、服务端正常
+					var parsed map[string]interface{}
+					if parseErr := json.Unmarshal(raw, &parsed); parseErr == nil {
+						if _, hasCode := parsed["code"]; hasCode {
+							probeOK = true
+						} else {
+							probeError = "unexpected response (missing code field)"
+						}
 					} else {
-						probeOK = true
-						probeResult = out
+						probeError = "response is not valid JSON"
 					}
 				}
 			} else if tokErr != nil {
@@ -1543,7 +2117,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := legacyJobRepo.Upsert(job); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1557,7 +2131,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := legacyJobRepo.Save(&jf); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1579,7 +2153,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := legacyJobRepo.Upsert(job); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1589,7 +2163,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Delete("/jobs/{name}", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
 			if err := legacyJobRepo.Delete(name); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1609,7 +2183,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				}
 			}
 			if err := legacyJobRepo.Save(jf); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1629,7 +2203,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				}
 			}
 			if err := legacyJobRepo.Save(jf); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1639,7 +2213,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Post("/jobs/{name}/run", func(w http.ResponseWriter, req *http.Request) {
 			name := chi.URLParam(req, "name")
 			if err := r.RunOnce(name); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -1676,7 +2250,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := templateRepo.Upsert(tpl); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1698,7 +2272,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := templateRepo.Upsert(tpl); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1718,7 +2292,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := templateRepo.Delete(id); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1732,7 +2306,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				return
 			}
 			if err := templateRepo.Save(&tf); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1742,8 +2316,8 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		apiR.Post("/api/templates/{id}/test", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
 			var in struct {
-				PathParams map[string]string      `json:"path_params"`
-				Query      map[string]string      `json:"query"`
+				PathParams map[string]interface{} `json:"path_params"`
+				Query      map[string]interface{} `json:"query"`
 				Body       map[string]interface{} `json:"body"`
 			}
 			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
@@ -1757,8 +2331,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				Body:       in.Body,
 			})
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"error":              err.Error(),
+				writeErrorJSON(w, err, map[string]interface{}{
 					"runtime_connection": connectionSummary(r.Config()),
 				})
 				return
@@ -1829,8 +2402,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				}
 			}
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"error":              err.Error(),
+				writeErrorJSON(w, err, map[string]interface{}{
 					"runtime_connection": connectionSummary(r.Config()),
 				})
 				return
@@ -1855,7 +2427,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			}
 			out, err := r.Executor().Preview(in)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, out)
@@ -1909,7 +2481,7 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 				jf.Jobs = append(jf.Jobs, newJob)
 			}
 			if err := legacyJobRepo.Save(jf); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 				return
 			}
 			_ = r.Reload()
@@ -1970,6 +2542,886 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
 		})
+
+		// --- DLP 文件误报分析 ---
+		apiR.Get("/dlp/events", func(w http.ResponseWriter, req *http.Request) {
+			if dlpEventRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			limit := 50
+			offset := 0
+			if v := req.URL.Query().Get("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if v := req.URL.Query().Get("offset"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					offset = n
+				}
+			}
+			filter := sqliteRepo.DLPEventFilter{
+				Status:   req.URL.Query().Get("status"),
+				Category: req.URL.Query().Get("category"),
+				Exclude:  req.URL.Query().Get("exclude"),
+			}
+			items, total, err := dlpEventRepo.ListWithAnalysis(limit, offset, filter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":  items,
+				"total":  total,
+				"limit":  limit,
+				"offset": offset,
+			})
+		})
+
+		apiR.Get("/dlp/analysis", func(w http.ResponseWriter, req *http.Request) {
+			if dlpAnalysisRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			limit := 50
+			offset := 0
+			if v := req.URL.Query().Get("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if v := req.URL.Query().Get("offset"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					offset = n
+				}
+			}
+			items, total, err := dlpAnalysisRepo.List(limit, offset)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			eventMap := make(map[string]storage.DLPEvent)
+			for _, item := range items {
+				if event, ok, _ := dlpEventRepo.Get(item.EventID); ok {
+					eventMap[item.EventID] = event
+				}
+			}
+
+			resultItems := make([]map[string]interface{}, 0, len(items))
+			for _, item := range items {
+				event := eventMap[item.EventID]
+				resultItems = append(resultItems, map[string]interface{}{
+					"id":                item.ID,
+					"event_id":          item.EventID,
+					"category":          item.Category,
+					"should_exclude":    item.ShouldExclude,
+					"confidence":        item.Confidence,
+					"reasoning":         item.Reasoning,
+					"analyzed_at":       item.AnalyzedAt,
+					"whitelisted":       item.Whitelisted,
+					"match_type":        item.MatchType,
+					"match_value":       item.MatchValue,
+					"file_info_name":    event.FileInfoName,
+					"file_info_path":    event.FileInfoPath,
+					"file_info_type":    event.FileInfoType,
+					"leak_way_app_name": event.LeakWayAppName,
+					"event_time":        event.EventTime,
+					"user_name":         event.UserName,
+				})
+			}
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":  resultItems,
+				"total":  total,
+				"limit":  limit,
+				"offset": offset,
+			})
+		})
+
+		apiR.Get("/dlp/analysis/{id}", func(w http.ResponseWriter, req *http.Request) {
+			if dlpAnalysisRepo == nil || dlpEventRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			result, ok, err := dlpAnalysisRepo.GetByEventID(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "analysis not found"})
+				return
+			}
+			event, _, _ := dlpEventRepo.Get(result.EventID)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"result": result,
+				"event":  event,
+			})
+		})
+
+		apiR.Post("/dlp/sync", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems int `json:"max_items"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			if body.MaxItems <= 0 {
+				body.MaxItems = 100
+			}
+			result, err := r.SyncDLPEvents(body.MaxItems)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":           true,
+				"synced_count": result.SyncedCount,
+				"sync_at":      result.SyncAt,
+			})
+		})
+
+		apiR.Post("/dlp/analyze", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems          int  `json:"max_items"`
+				ReanalyzeRetained bool `json:"reanalyze_retained"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			if body.MaxItems <= 0 {
+				body.MaxItems = 100
+			}
+			result, err := r.AnalyzeDLPEvents(body.MaxItems, body.ReanalyzeRetained)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":             true,
+				"analyzed_count": result.AnalyzedCount,
+				"excluded_count": result.ExcludedCount,
+				"kept_count":     result.KeptCount,
+				"analyzed_at":    result.AnalyzedAt,
+			})
+		})
+
+		apiR.Post("/dlp/sync-and-analyze", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems int `json:"max_items"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			if body.MaxItems <= 0 {
+				body.MaxItems = 100
+			}
+			syncResult, err := r.SyncDLPEvents(body.MaxItems)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			analyzeResult, err := r.AnalyzeDLPEvents(body.MaxItems, false)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":             true,
+				"synced_count":   syncResult.SyncedCount,
+				"analyzed_count": analyzeResult.AnalyzedCount,
+				"excluded_count": analyzeResult.ExcludedCount,
+				"kept_count":     analyzeResult.KeptCount,
+			})
+		})
+
+		apiR.Get("/dlp/whitelist", func(w http.ResponseWriter, req *http.Request) {
+			if dlpWhitelistRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			items, err := dlpWhitelistRepo.List()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+		})
+
+		apiR.Post("/dlp/whitelist", func(w http.ResponseWriter, req *http.Request) {
+			if dlpWhitelistRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				ID          string `json:"id"`
+				MatchType   string `json:"match_type"`
+				MatchValue  string `json:"match_value"`
+				Description string `json:"description"`
+				EventID     string `json:"event_id"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if body.ID == "" {
+				body.ID = "wl_" + fmt.Sprintf("%d", time.Now().UnixNano())
+			}
+			if body.MatchType == "" || body.MatchValue == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "match_type and match_value are required"})
+				return
+			}
+			item := storage.DLPWhitelistItem{
+				ID:          body.ID,
+				MatchType:   body.MatchType,
+				MatchValue:  body.MatchValue,
+				Description: body.Description,
+			}
+			if err := dlpWhitelistRepo.Upsert(item); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if dlpAnalysisRepo != nil && body.EventID != "" {
+				ar, ok, _ := dlpAnalysisRepo.GetByEventID(body.EventID)
+				if ok {
+					dlpAnalysisRepo.MarkWhitelisted(ar.ID, true, body.MatchType, body.MatchValue)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "item": item})
+		})
+
+		apiR.Delete("/dlp/whitelist/{id}", func(w http.ResponseWriter, req *http.Request) {
+			if dlpWhitelistRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			if err := dlpWhitelistRepo.Delete(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		apiR.Get("/dlp/state", func(w http.ResponseWriter, req *http.Request) {
+			if dlpEventRepo == nil || dlpAnalysisRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			state, err := dlpEventRepo.GetState()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			summary, _ := dlpAnalysisRepo.Summary()
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"state":   state,
+				"summary": summary,
+			})
+		})
+
+		apiR.Post("/dlp/sync-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if dlpEventRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := dlpEventRepo.UpdateSyncScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "sync_schedule_enabled": body.Enabled})
+		})
+
+		apiR.Post("/dlp/analysis-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if dlpEventRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := dlpEventRepo.UpdateAnalysisScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "analysis_schedule_enabled": body.Enabled})
+		})
+
+		// --- 重复设备删除 ---
+
+		// 统计概览
+		apiR.Get("/dup-devices/summary", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			summary, err := r.GetDupDeviceSummary()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, summary)
+		})
+
+		// 分组列表
+		apiR.Get("/dup-devices/groups", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			limit := 20
+			offset := 0
+			if v := req.URL.Query().Get("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if v := req.URL.Query().Get("offset"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					offset = n
+				}
+			}
+			status := req.URL.Query().Get("status")
+			matchLevel := req.URL.Query().Get("match_level")
+			distinct := req.URL.Query().Get("distinct") == "true"
+
+			var items []storage.DupDeviceGroup
+			var total int
+			var err error
+			if distinct {
+				items, total, err = r.ListDupDeviceGroupsWithDistinct(status, matchLevel, limit, offset, true)
+			} else {
+				items, total, err = r.ListDupDeviceGroups(status, matchLevel, limit, offset)
+			}
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":    items,
+				"total":    total,
+				"limit":    limit,
+				"offset":   offset,
+				"distinct": distinct,
+			})
+		})
+
+		// 分组详情
+		apiR.Get("/dup-devices/groups/{id}", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			groupID := chi.URLParam(req, "id")
+
+			group, members, err := r.GetDupDeviceGroupDetail(groupID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"group":   group,
+				"members": members,
+			})
+		})
+
+		// 分组成员列表
+		apiR.Get("/dup-devices/groups/{id}/members", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			groupID := chi.URLParam(req, "id")
+
+			members, err := r.ListDupDeviceGroupMembers(groupID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items": members,
+			})
+		})
+
+		// 手动处理分组
+		apiR.Post("/dup-devices/groups/{id}/resolve", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			groupID := chi.URLParam(req, "id")
+
+			var body struct {
+				RetainedDID string `json:"retained_did"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid request body"})
+				return
+			}
+			if body.RetainedDID == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "retained_did is required"})
+				return
+			}
+
+			result, err := r.ManualResolveDupGroup(groupID, body.RetainedDID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":            true,
+				"cleaned_count": result.CleanedCount,
+				"failed_count":  result.FailedCount,
+				"cleanup_at":    result.CleanupAt,
+			})
+		})
+
+		// 清理日志
+		apiR.Get("/dup-devices/cleanup-logs", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			limit := 50
+			offset := 0
+			if v := req.URL.Query().Get("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if v := req.URL.Query().Get("offset"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					offset = n
+				}
+			}
+			status := req.URL.Query().Get("status")
+
+			items, total, err := r.ListDupDeviceCleanupLogs(status, limit, offset)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":  items,
+				"total":  total,
+				"limit":  limit,
+				"offset": offset,
+			})
+		})
+
+		// 任务状态
+		apiR.Get("/dup-devices/task-state", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			state, err := r.GetDupDeviceTaskState()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, state)
+		})
+
+		// 立即同步
+		apiR.Post("/dup-devices/sync", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			go func() {
+				_, _ = r.SyncDupDevices()
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "sync started",
+			})
+		})
+
+		// 立即检测
+		apiR.Post("/dup-devices/detect", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			go func() {
+				_, _ = r.DetectDupDevices()
+				_, _ = r.AutoCleanupHighMatchDups()
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "detect started",
+			})
+		})
+
+		// 立即执行完整流程
+		apiR.Post("/dup-devices/sync-and-detect", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			go func() {
+				_, _ = r.RunDupDeviceFullProcess()
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "full process started",
+			})
+		})
+
+		// 立即删除（重试失败的删除任务）
+		apiR.Post("/dup-devices/retry-cleanup", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+
+			go func() {
+				_, _ = r.RetryFailedCleanup()
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "retry cleanup started",
+			})
+		})
+
+		apiR.Post("/dup-devices/sync-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			r.EnsureDupRepos()
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := r.UpdateDupDeviceSyncScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "sync_enabled": body.Enabled})
+		})
+
+		apiR.Post("/dup-devices/detect-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := r.UpdateDupDeviceDetectScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "detect_enabled": body.Enabled})
+		})
+
+		// --- ZTNA 访问控制策略推荐 ---
+
+		// 状态总览
+		apiR.Get("/ztna/state", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaLogRepo == nil || ztnaStatsRepo == nil || ztnaAnalysisRepo == nil || ztnaTaskStateRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			totalLogs, _ := ztnaLogRepo.Count()
+			_, totalStats := ztnaStatsRepo.Count()
+			totalUsers, _ := ztnaStatsRepo.UserCount()
+			totalResources, _ := ztnaStatsRepo.ResourceCount()
+			summary, _ := ztnaAnalysisRepo.Summary()
+			taskState, _ := ztnaTaskStateRepo.Get()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"total_logs":       totalLogs,
+				"total_stats":      totalStats,
+				"total_users":      totalUsers,
+				"total_resources":  totalResources,
+				"analysis_summary": summary,
+				"task_state":       taskState,
+			})
+		})
+
+		// 分析结果列表
+		apiR.Get("/ztna/analysis", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaAnalysisRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			limit := 50
+			offset := 0
+			if v := req.URL.Query().Get("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			if v := req.URL.Query().Get("offset"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					offset = n
+				}
+			}
+			filter := storage.ZTNAStatsFilter{
+				Category: req.URL.Query().Get("category"),
+				UserID:   req.URL.Query().Get("user_id"),
+				DestIP:   req.URL.Query().Get("dest_ip"),
+			}
+			items, total, err := ztnaAnalysisRepo.List(limit, offset, filter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"items":  items,
+				"total":  total,
+				"limit":  limit,
+				"offset": offset,
+			})
+		})
+
+		// 分析结果详情
+		apiR.Get("/ztna/analysis/{id}", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaAnalysisRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			item, found, err := ztnaAnalysisRepo.Get(id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			if !found {
+				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "not found"})
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+		})
+
+		// 标记已审核
+		apiR.Post("/ztna/analysis/{id}/review", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaAnalysisRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			id := chi.URLParam(req, "id")
+			var body struct {
+				ReviewedBy string `json:"reviewed_by"`
+				Comment    string `json:"comment"`
+				ShouldKeep bool   `json:"should_keep"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := ztnaAnalysisRepo.MarkReviewed(id, body.ReviewedBy, body.Comment); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		// 立即同步分析
+		apiR.Post("/ztna/sync-and-analyze", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems int `json:"max_items"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if body.MaxItems <= 0 {
+				body.MaxItems = 10000
+			}
+
+			go func() {
+				logger.Info("[ZTNA API] 后台执行立即同步分析")
+				_, _ = r.RunZTNASyncAndAnalyze(body.MaxItems)
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "sync and analyze started",
+			})
+		})
+
+		// 仅同步日志
+		apiR.Post("/ztna/sync", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems int `json:"max_items"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+
+			go func() {
+				_, _ = r.SyncZTNALogs(body.MaxItems)
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "sync started",
+			})
+		})
+
+		// 仅构建统计
+		apiR.Post("/ztna/build-stats", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+
+			go func() {
+				_, _ = r.BuildZTNAAccessStats()
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "build stats started",
+			})
+		})
+
+		// 仅运行分析
+		apiR.Post("/ztna/analyze", func(w http.ResponseWriter, req *http.Request) {
+			if r == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "runner not initialized"})
+				return
+			}
+			var body struct {
+				MaxItems     int  `json:"max_items"`
+				ReanalyzeAll bool `json:"reanalyze_all"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+
+			go func() {
+				_, _ = r.AnalyzeZTNAPolicies(body.MaxItems, body.ReanalyzeAll)
+			}()
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":      true,
+				"message": "analysis started",
+			})
+		})
+
+		// 更新同步定时开关
+		apiR.Post("/ztna/sync-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaTaskStateRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := ztnaTaskStateRepo.UpdateSyncScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "sync_enabled": body.Enabled})
+		})
+
+		// 更新统计定时开关
+		apiR.Post("/ztna/stats-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaTaskStateRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := ztnaTaskStateRepo.UpdateStatsScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "stats_enabled": body.Enabled})
+		})
+
+		// 更新分析定时开关
+		apiR.Post("/ztna/analysis-schedule", func(w http.ResponseWriter, req *http.Request) {
+			if ztnaTaskStateRepo == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "repository is nil"})
+				return
+			}
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := ztnaTaskStateRepo.UpdateAnalysisScheduleEnabled(body.Enabled); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "analysis_enabled": body.Enabled})
+		})
+
+		// --- 小插件：访客 Wi-Fi 申请 ---
+		// 透传到飞连 OpenAPI：
+		//   POST /api/open/v1/wifi/guest/apply   基于基本信息申请访客 Wi-Fi 账号（系统生成账号）
+		//   POST /api/open/v1/wifi/guest/create  批量创建访客账号（自行指定用户名/密码）
+		// 前端按文档组装请求体，后端原样透传并把飞连原始响应返回给页面展示。
+		apiR.Post("/guest-wifi/apply", proxyGuestWifiRequest(cfg, configStore, guestWifiApplyPath))
+		apiR.Post("/guest-wifi/create", proxyGuestWifiRequest(cfg, configStore, guestWifiCreatePath))
 	})
 
 	return rr, nil
@@ -2026,7 +3478,7 @@ func latestScheduleRunLogs(repo *sqliteRepo.JobRunsRepository) (map[string]servi
 func buildExternalIPSyncTaskSummary(task storage.ExternalIPSyncTask) map[string]interface{} {
 	task = storage.NormalizeExternalIPSyncTask(task)
 	resourceLabel := strings.TrimSpace(task.ResourceID)
-	if name := strings.TrimSpace(task.ResourceNameSnapshot); name != "" {
+	if name := strings.TrimSpace(task.ResourceTagNames); name != "" {
 		if resourceLabel != "" {
 			resourceLabel = fmt.Sprintf("%s (%s)", name, resourceLabel)
 		} else {
@@ -2034,19 +3486,19 @@ func buildExternalIPSyncTaskSummary(task storage.ExternalIPSyncTask) map[string]
 		}
 	}
 	return map[string]interface{}{
-		"task_id":               task.ID,
-		"source_type":           task.SourceType,
-		"source_label":          externalIPSyncSourceLabel(task.SourceType),
-		"source_url":            task.SourceURL,
-		"ip_version":            task.IPVersion,
-		"ip_version_label":      externalIPSyncIPVersionLabel(task.IPVersion),
-		"resource_id":           task.ResourceID,
-		"resource_name_snapshot": task.ResourceNameSnapshot,
-		"resource_label":        resourceLabel,
-		"write_action":          task.WriteAction,
-		"write_api_path":        firstNonEmptyString(task.FeilianAPIPath, "/api/open/v1/addr/management/add"),
-		"dry_run":               task.DryRun,
-		"skip_when_empty":       task.SkipWhenEmpty,
+		"task_id":            task.ID,
+		"source_type":        task.SourceType,
+		"source_label":       externalIPSyncSourceLabel(task.SourceType),
+		"source_url":         task.SourceURL,
+		"ip_version":         task.IPVersion,
+		"ip_version_label":   externalIPSyncIPVersionLabel(task.IPVersion),
+		"resource_id":        task.ResourceID,
+		"resource_tag_names": task.ResourceTagNames,
+		"resource_label":     resourceLabel,
+		"write_action":       task.WriteAction,
+		"write_api_path":     firstNonEmptyString(task.FeilianAPIPath, "/api/open/v1/addr/management/add"),
+		"dry_run":            task.DryRun,
+		"skip_when_empty":    task.SkipWhenEmpty,
 	}
 }
 
@@ -2109,23 +3561,30 @@ func mergeStringAnyMap(base map[string]interface{}, overrides map[string]interfa
 	return out
 }
 
-func connectionSummary(cfg *config.Config) map[string]interface{} {
-	if cfg == nil {
-		return map[string]interface{}{}
-	}
-	ss := cfg.SealSuite
+func buildBaseURL(ss config.SealSuiteConfig) string {
 	baseURL := strings.TrimSpace(ss.BaseURL)
 	if ss.Host != "" {
 		scheme := ss.Scheme
 		if scheme == "" {
 			scheme = "https"
 		}
-		if ss.Port > 0 {
+		// 默认端口（https=443, http=80）必须省略，避免 Host header 含 ":443"/":80"
+		isDefaultPort := (scheme == "https" && ss.Port == 443) || (scheme == "http" && ss.Port == 80)
+		if ss.Port > 0 && !isDefaultPort {
 			baseURL = fmt.Sprintf("%s://%s:%d", scheme, ss.Host, ss.Port)
 		} else {
 			baseURL = fmt.Sprintf("%s://%s", scheme, ss.Host)
 		}
 	}
+	return baseURL
+}
+
+func connectionSummary(cfg *config.Config) map[string]interface{} {
+	if cfg == nil {
+		return map[string]interface{}{}
+	}
+	ss := cfg.SealSuite
+	baseURL := buildBaseURL(ss)
 	return map[string]interface{}{
 		"scheme":      ss.Scheme,
 		"host":        ss.Host,
@@ -2137,18 +3596,7 @@ func connectionSummary(cfg *config.Config) map[string]interface{} {
 }
 
 func tokenRequestPreview(ss config.SealSuiteConfig, source string) map[string]interface{} {
-	baseURL := strings.TrimSpace(ss.BaseURL)
-	if ss.Host != "" {
-		scheme := ss.Scheme
-		if scheme == "" {
-			scheme = "https"
-		}
-		if ss.Port > 0 {
-			baseURL = fmt.Sprintf("%s://%s:%d", scheme, ss.Host, ss.Port)
-		} else {
-			baseURL = fmt.Sprintf("%s://%s", scheme, ss.Host)
-		}
-	}
+	baseURL := buildBaseURL(ss)
 	return map[string]interface{}{
 		"token_url":         fmt.Sprintf("%s%s", baseURL, "/api/open/v1/token"),
 		"content_type":      "application/json;charset=utf-8",
@@ -2766,7 +4214,7 @@ func referencedSchedulesByTarget(store repository.ScheduleRepository, targetType
 		if excludeID != "" && strings.TrimSpace(item.ID) == excludeID {
 			continue
 		}
-		normalizedType, normalizedID := normalizeTarget(item.TargetType, item.TargetID, item.DraftID)
+		normalizedType, normalizedID := runner.NormalizeTarget(item.TargetType, item.TargetID, item.DraftID)
 		if strings.TrimSpace(normalizedType) == targetType && strings.TrimSpace(normalizedID) == targetID {
 			refs = append(refs, item.ID)
 		}
@@ -2853,6 +4301,62 @@ func currentSealSuiteConfig(cfg *config.Config, store storage.ConfigStore) confi
 	return out
 }
 
+// 访客 Wi-Fi 申请相关的飞连 OpenAPI 路径白名单。
+const (
+	guestWifiApplyPath  = "/api/open/v1/wifi/guest/apply"  // 基于基本信息申请访客 Wi-Fi 账号
+	guestWifiCreatePath = "/api/open/v1/wifi/guest/create" // 批量创建访客账号
+)
+
+// proxyGuestWifiRequest 返回一个 HTTP Handler，用于把访客 Wi-Fi 申请请求透传给指定的飞连 OpenAPI 路径。
+// 设计为白名单透传：upstreamPath 只能是上面两个访客接口常量之一，避免该端点被当作开放代理使用。
+//
+// 处理流程：
+//  1. 解析前端提交的 JSON 请求体；
+//  2. 使用当前激活的飞连连接配置构建客户端（自动获取/缓存 access_token）；
+//  3. 通过 DoRaw 发起 POST，并把飞连原始 JSON 响应（含 code/message/data）与 HTTP 状态码原样回传；
+//  4. 传输层错误（网络、token 获取失败等）统一返回 502，业务错误（code!=0）仍透传给前端展示。
+func proxyGuestWifiRequest(cfg *config.Config, store storage.ConfigStore, upstreamPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		// 请求体即飞连接口所需参数，使用 map 透传以同时兼容两种接口的字段差异。
+		var payload map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json body"})
+			return
+		}
+
+		sealSuiteCfg := currentSealSuiteConfig(cfg, store)
+		client := sealsuite.NewClient(&sealSuiteCfg)
+		client.SetMockMode(false)
+
+		// 落一条出站报文日志，便于核对 send_sms / mobile / account_count 等关键字段是否真的推给了飞连。
+		// DoRaw 只记录 has_body，不记录 body 内容；访客短信“成功但未收到”时需要据此排查。
+		if bodyBytes, marshalErr := json.Marshal(payload); marshalErr == nil {
+			logger.Info("[GuestWiFi] upstream request",
+				zap.String("upstream_path", upstreamPath),
+				zap.String("body", string(bodyBytes)),
+			)
+		}
+
+		status, raw, err := client.DoRaw(http.MethodPost, upstreamPath, nil, payload)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		if len(raw) == 0 {
+			writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "empty response from feilian"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if status > 0 {
+			w.WriteHeader(status)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		_, _ = w.Write(raw)
+	}
+}
+
 func selectExternalIPSyncResourceTemplate(tf *storage.TemplatesFile) (string, map[string]storage.Template) {
 	if tf == nil {
 		return "", nil
@@ -2921,20 +4425,23 @@ func normalizeExternalIPSyncResourceItem(item map[string]interface{}) (map[strin
 	if resourceID == "" {
 		return nil, false
 	}
-	name := strings.TrimSpace(firstNonEmptyString(item["resource_name_snapshot"],
-		firstNonEmptyString(item["resource_name"],
-			firstNonEmptyString(item["name"], firstNonEmptyString(item["label"], "")))))
+	name := strings.TrimSpace(firstNonEmptyString(item["resource_name"],
+		firstNonEmptyString(item["name"],
+			firstNonEmptyString(item["label"], firstNonEmptyString(item["resource_name_snapshot"], "")))))
+	tagNames := strings.TrimSpace(firstNonEmptyString(item["resource_tag_names"],
+		firstNonEmptyString(item["tag_names"], "")))
 	label := resourceID
 	if name != "" {
 		label = fmt.Sprintf("%s · %s", name, resourceID)
 	}
 	return map[string]interface{}{
-		"id":                     resourceID,
-		"value":                  resourceID,
-		"resource_id":            resourceID,
-		"name":                   name,
-		"label":                  label,
-		"resource_name_snapshot": name,
+		"id":                 resourceID,
+		"value":              resourceID,
+		"resource_id":        resourceID,
+		"name":               name,
+		"label":              label,
+		"resource_tag_names": tagNames,
+		"tag_names":          tagNames,
 	}, true
 }
 
@@ -2942,8 +4449,8 @@ func externalIPSyncResourceItemsFromTasks(tasks []storage.ExternalIPSyncTask) []
 	items := make([]map[string]interface{}, 0, len(tasks))
 	for _, task := range tasks {
 		if item, ok := normalizeExternalIPSyncResourceItem(map[string]interface{}{
-			"resource_id":            task.ResourceID,
-			"resource_name_snapshot": task.ResourceNameSnapshot,
+			"resource_id":        task.ResourceID,
+			"resource_tag_names": task.ResourceTagNames,
 		}); ok {
 			items = append(items, item)
 		}
@@ -2978,6 +4485,19 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErrorJSON(w http.ResponseWriter, err error, extraFields map[string]interface{}) {
+	statusCode := http.StatusInternalServerError
+	if storage.IsValidationError(err) {
+		statusCode = http.StatusBadRequest
+	}
+	body := make(map[string]interface{}, len(extraFields)+1)
+	body["error"] = err.Error()
+	for k, v := range extraFields {
+		body[k] = v
+	}
+	writeJSON(w, statusCode, body)
 }
 
 func readTail(filename string, n int64) (string, error) {

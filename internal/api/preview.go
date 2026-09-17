@@ -32,11 +32,16 @@ func (e *Executor) Preview(req PreviewRequest) (*PreviewResponse, error) {
 			query = map[string]string{}
 		}
 		query[dryRunParam] = "true"
+		// 将 string map 转为 interface{} map 传递给 Execute
+		queryIF := make(map[string]interface{}, len(query))
+		for k, v := range query {
+			queryIF[k] = v
+		}
 		er := ExecuteRequest{
 			TemplateID: templateID,
 			Method:     method,
 			Path:       path,
-			Query:      query,
+			Query:      queryIF,
 			Body:       body,
 		}
 		r, err := e.Execute(er)
@@ -76,7 +81,6 @@ func (e *Executor) Preview(req PreviewRequest) (*PreviewResponse, error) {
 func (e *Executor) resolve(req ExecuteRequest) (method, path string, query map[string]string, body map[string]interface{}, templateID, dryRunParam string, err error) {
 	method = strings.ToUpper(req.Method)
 	path = req.Path
-	query = req.Query
 	body = req.Body
 	templateID = req.TemplateID
 
@@ -88,6 +92,18 @@ func (e *Executor) resolve(req ExecuteRequest) (method, path string, query map[s
 		method = strings.ToUpper(tpl.Method)
 		path = tpl.Path
 		dryRunParam = tpl.DryRunQueryParam
+		// 基于 query_schema 对 query 做类型强制转换
+		queryIF := req.Query
+		if len(queryIF) > 0 {
+			queryIF = coerceQueryBySchema(queryIF, tpl.QuerySchema)
+		}
+		query = toStringMap(queryIF)
+		// 基于 body_schema 对 body 做类型强制转换
+		if len(body) > 0 {
+			body = coerceBodyBySchema(body, tpl.BodySchema)
+		}
+	} else {
+		query = toStringMap(req.Query)
 	}
 	if method == "" {
 		return "", "", nil, nil, "", "", fmt.Errorf("method is required")
@@ -97,7 +113,7 @@ func (e *Executor) resolve(req ExecuteRequest) (method, path string, query map[s
 	}
 	if len(req.PathParams) > 0 {
 		for k, v := range req.PathParams {
-			path = strings.ReplaceAll(path, "{"+k+"}", v)
+			path = strings.ReplaceAll(path, "{"+k+"}", fmt.Sprintf("%v", v))
 		}
 	}
 	if strings.Contains(path, "{") && strings.Contains(path, "}") {
