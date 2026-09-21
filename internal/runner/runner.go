@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -83,6 +84,7 @@ type Runner struct {
 	externalIPSyncRepo  repository.ExternalIPSyncTaskRepository
 	feishuResourcesRepo *sqliteRepo.FeishuResourcesRepository
 	feishuDevicesRepo   *sqliteRepo.FeishuDevicesRepository
+	feishuAPIRepo       *sqliteRepo.FeishuAPIRepository
 	deviceGroupsRepo    *sqliteRepo.DeviceGroupsRepository
 	fieldMappingRepo    *sqliteRepo.FieldMappingRepository
 	dlpEventRepo        *sqliteRepo.DLPEventRepository
@@ -98,10 +100,19 @@ type Runner struct {
 	ztnaAnalysisRepo    *sqliteRepo.ZTNAAnalysisRepository
 	ztnaTaskStateRepo   *sqliteRepo.ZTNATaskStateRepository
 	runLogsRepo         *sqliteRepo.JobRunsRepository
+	approvalConfigRepo  *sqliteRepo.ApprovalConfigRepository
+	approvalTaskRepo    *sqliteRepo.ApprovalTaskRepository
 	executionSvc        *service.ExecutionService
 
 	client   *sealsuite.Client
 	executor *api.Executor
+
+	// feishuToken 飞书自建应用 tenant_access_token 缓存
+	// feishuTokenAppID 记录当前缓存 token 所属的 App ID，切换激活配置后需失效
+	feishuTokenMu        sync.Mutex
+	feishuToken          string
+	feishuTokenExpiresAt time.Time
+	feishuTokenAppID     string
 
 	executeExternalIPSync    func(id string) (*service.ExternalIPSyncExecutionSummary, error)
 	fetchGoogleCIDRs         func(task storage.ExternalIPSyncTask) ([]string, error)
@@ -160,6 +171,7 @@ func (r *Runner) setupRepositories(appDB *sql.DB) {
 	r.externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
 	r.feishuResourcesRepo = sqliteRepo.NewFeishuResourcesRepository(appDB)
 	r.feishuDevicesRepo = sqliteRepo.NewFeishuDevicesRepository(appDB)
+	r.feishuAPIRepo = sqliteRepo.NewFeishuAPIRepository(appDB)
 	r.deviceGroupsRepo = sqliteRepo.NewDeviceGroupsRepository(appDB)
 	r.fieldMappingRepo = sqliteRepo.NewFieldMappingRepository(appDB)
 	r.dlpEventRepo = sqliteRepo.NewDLPEventRepository(appDB)
@@ -175,6 +187,8 @@ func (r *Runner) setupRepositories(appDB *sql.DB) {
 	r.ztnaAnalysisRepo = sqliteRepo.NewZTNAAnalysisRepository(appDB)
 	r.ztnaTaskStateRepo = sqliteRepo.NewZTNATaskStateRepository(appDB)
 	r.runLogsRepo = sqliteRepo.NewJobRunsRepository(appDB)
+	r.approvalConfigRepo = sqliteRepo.NewApprovalConfigRepository(appDB)
+	r.approvalTaskRepo = sqliteRepo.NewApprovalTaskRepository(appDB)
 	r.executionSvc = service.NewExecutionService(r.runLogsRepo)
 	r.executeExternalIPSync = r.runExternalIPSyncTask
 }
@@ -246,6 +260,8 @@ func (r *Runner) HotReloadConfig(cfg *config.Config, client *sealsuite.Client) {
 		r.complexTaskRepo = nil
 		r.externalIPSyncRepo = nil
 		r.runLogsRepo = nil
+		r.approvalConfigRepo = nil
+		r.approvalTaskRepo = nil
 		r.executionSvc = service.NewExecutionService(nil)
 		r.executeExternalIPSync = r.runExternalIPSyncTask
 		r.cfg = cfg
@@ -1792,21 +1808,292 @@ func (r *Runner) FetchDeviceTrustedStatus(did string) (string, error) {
 	return "", nil
 }
 
+// getActiveFeishuAPI 获取当前激活的飞书自建应用配置
+func (r *Runner) getActiveFeishuAPI() (*storage.FeishuAPIItem, error) {
+	if r.feishuAPIRepo == nil {
+		return nil, fmt.Errorf("feishu api repository is nil")
+	}
+	file, err := r.feishuAPIRepo.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load feishu api config: %w", err)
+	}
+	if file == nil || file.ActiveID == "" {
+		return nil, fmt.Errorf("no active feishu api config, please configure and activate in 设置 -> 飞书API")
+	}
+	for i := range file.Items {
+		if file.Items[i].ID == file.ActiveID {
+			return &file.Items[i], nil
+		}
+	}
+	return nil, fmt.Errorf("active feishu api config not found: %s", file.ActiveID)
+}
+
+// getFeishuTenantAccessToken 获取飞书 tenant_access_token（带缓存）
+func (r *Runner) getFeishuTenantAccessToken() (string, error) {
+	r.feishuTokenMu.Lock()
+	defer r.feishuTokenMu.Unlock()
+
+	api, err := r.getActiveFeishuAPI()
+	if err != nil {
+		return "", err
+	}
+	if api.AppID == "" || api.AppSecret == "" {
+		return "", fmt.Errorf("feishu app_id/app_secret is empty")
+	}
+
+	// 缓存未过期且属于同一个 App ID 则直接返回（提前 60 秒刷新）
+	if r.feishuToken != "" && r.feishuTokenAppID == api.AppID &&
+		time.Now().Before(r.feishuTokenExpiresAt.Add(-60*time.Second)) {
+		return r.feishuToken, nil
+	}
+
+	baseURL := strings.TrimRight(api.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://open.feishu.cn"
+	}
+	tokenURL := baseURL + "/open-apis/auth/v3/tenant_access_token/internal"
+
+	payload, _ := json.Marshal(map[string]string{
+		"app_id":     api.AppID,
+		"app_secret": api.AppSecret,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request tenant_access_token: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read token response: %w", err)
+	}
+
+	var parsed struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+		Expire            int    `json:"expire"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("parse token response: %w (raw: %s)", err, string(body))
+	}
+	if parsed.Code != 0 {
+		return "", fmt.Errorf("get tenant_access_token failed: code=%d msg=%s", parsed.Code, parsed.Msg)
+	}
+	if parsed.TenantAccessToken == "" {
+		return "", fmt.Errorf("tenant_access_token is empty in response")
+	}
+
+	r.feishuToken = parsed.TenantAccessToken
+	r.feishuTokenAppID = api.AppID
+	expireSec := parsed.Expire
+	if expireSec <= 0 {
+		expireSec = 7200 // 默认 2 小时
+	}
+	r.feishuTokenExpiresAt = time.Now().Add(time.Duration(expireSec) * time.Second)
+
+	logger.Info("[飞书] tenant_access_token 获取成功",
+		zap.Int("有效期秒", expireSec),
+	)
+	return r.feishuToken, nil
+}
+
+// feishuDoRequest 向飞书开放平台发起带 Bearer 认证的请求
+func (r *Runner) feishuDoRequest(method, url string, body interface{}) (int, []byte, error) {
+	token, err := r.getFeishuTenantAccessToken()
+	if err != nil {
+		return 0, nil, err
+	}
+
+	var bodyReader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(raw)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build feishu request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("feishu request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read feishu response: %w", err)
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+// osToFeishuDeviceSystem 将飞连 os 字符串转换为飞书 device_system int
+// 飞书：1=Windows 2=macOS 3=Linux 4=Android 5=iOS
+func osToFeishuDeviceSystem(os string) int {
+	switch strings.ToLower(strings.TrimSpace(os)) {
+	case "windows", "win":
+		return 1
+	case "macos", "mac os", "mac", "darwin":
+		return 2
+	case "linux":
+		return 3
+	case "android":
+		return 4
+	case "ios", "iphone", "ipad":
+		return 5
+	default:
+		return 0
+	}
+}
+
+// trustedStatusToFeishuDeviceStatus 将飞连信任状态转换为飞书 device_status int
+// 飞书：0=Unknown 1=Trusted 2=Untrusted
+func trustedStatusToFeishuDeviceStatus(trustedStatus string) int {
+	switch strings.TrimSpace(trustedStatus) {
+	case "可信", "trusted", "Trusted":
+		return 1
+	case "不可信", "untrusted", "Untrusted":
+		return 2
+	default:
+		return 0
+	}
+}
+
+// pickDiskSerialNumber 优先取硬盘序列号（HDD 或 SSD），作为飞书 disk_serial_number
+func pickDiskSerialNumber(device storage.FeishuDeviceItem) string {
+	if v := strings.TrimSpace(device.HDDSerialNumbers); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(device.SSDSerialNumbers); v != "" {
+		return v
+	}
+	return ""
+}
+
+// pickMacAddress 取设备 MAC 地址，优先 mac_addr，其次从 mac_addrs 取第一个
+func pickMacAddress(device storage.FeishuDeviceItem) string {
+	if v := strings.TrimSpace(device.MacAddr); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(device.MacAddrs); v != "" {
+		// mac_addrs 可能是逗号/分号分隔的多个，取第一个
+		for _, sep := range []string{",", ";", "|"} {
+			if idx := strings.Index(v, sep); idx > 0 {
+				return strings.TrimSpace(v[:idx])
+			}
+		}
+		return v
+	}
+	return ""
+}
+
+// feishuValidCreateFields 飞书「新增设备」接口支持的字段白名单
+var feishuValidCreateFields = map[string]bool{
+	"device_system":      true,
+	"serial_number":      true,
+	"disk_serial_number": true,
+	"uuid":               true,
+	"mac_address":        true,
+	"android_id":         true,
+	"idfv":               true,
+	"aaid":               true,
+	"device_ownership":   true,
+	"device_status":      true,
+}
+
+// buildFeishuCreatePayload 构建飞书「新增设备」请求体
+func buildFeishuCreatePayload(device storage.FeishuDeviceItem, mappings []storage.FieldMappingItem) map[string]interface{} {
+	payload := map[string]interface{}{
+		"device_system":    osToFeishuDeviceSystem(device.OS),
+		"device_ownership": 2, // 企业设备默认 Company
+		"device_status":    trustedStatusToFeishuDeviceStatus(device.TrustedStatus),
+	}
+
+	// 基于字段映射填充可选设备标识符（仅允许飞书接口支持的字段）
+	for _, m := range mappings {
+		if !m.Enabled {
+			continue
+		}
+		if !feishuValidCreateFields[m.TargetField] {
+			continue
+		}
+		val := getDeviceFieldValue(device, m.SourceField)
+		if val == "" {
+			continue
+		}
+		payload[m.TargetField] = val
+	}
+
+	// 自动兜底：serial_number / disk_serial_number / mac_address
+	if _, ok := payload["serial_number"]; !ok {
+		if v := strings.TrimSpace(device.SerialNumber); v != "" {
+			payload["serial_number"] = v
+		}
+	}
+	if _, ok := payload["disk_serial_number"]; !ok {
+		if v := pickDiskSerialNumber(device); v != "" {
+			payload["disk_serial_number"] = v
+		}
+	}
+	if _, ok := payload["mac_address"]; !ok {
+		if v := pickMacAddress(device); v != "" {
+			payload["mac_address"] = v
+		}
+	}
+
+	return payload
+}
+
+// buildFeishuUpdatePayload 构建飞书「更新设备」请求体（仅支持 device_ownership 与 device_status）
+func buildFeishuUpdatePayload(device storage.FeishuDeviceItem) map[string]interface{} {
+	return map[string]interface{}{
+		"device_ownership": 2,
+		"device_status":    trustedStatusToFeishuDeviceStatus(device.TrustedStatus),
+	}
+}
+
 func (r *Runner) ImportDevicesToFeishu() (int, error) {
 	return r.ImportDevicesToFeishuWithFilters([]string{}, []string{}, []string{}, "AND")
 }
 
+// ImportDevicesToFeishuWithFilters 将筛选后的飞连设备导入/更新到飞书设备记录
+// 已存在 feishu_device_record_id 的设备走 PUT 更新，否则走 POST 新增
 func (r *Runner) ImportDevicesToFeishuWithFilters(osList, trustedStatusList, groupList []string, logicMode string) (int, error) {
 	if r.feishuDevicesRepo == nil {
 		return 0, fmt.Errorf("import devices: repository is nil")
 	}
 
+	api, err := r.getActiveFeishuAPI()
+	if err != nil {
+		return 0, err
+	}
+	baseURL := strings.TrimRight(api.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://open.feishu.cn"
+	}
+	createURL := baseURL + "/open-apis/security_and_compliance/v2/device_records"
+
+	// 获取启用的字段映射（仅用于可选标识符字段）
 	mappings, err := r.fieldMappingRepo.GetEnabledMappings()
 	if err != nil {
 		return 0, fmt.Errorf("import devices: get mappings: %w", err)
-	}
-	if len(mappings) == 0 {
-		return 0, fmt.Errorf("import devices: no enabled mappings")
 	}
 
 	devices, err := r.feishuDevicesRepo.ListMulti(osList, trustedStatusList, groupList, logicMode)
@@ -1814,27 +2101,89 @@ func (r *Runner) ImportDevicesToFeishuWithFilters(osList, trustedStatusList, gro
 		return 0, fmt.Errorf("import devices: list devices: %w", err)
 	}
 
-	importCount := 0
-	for _, device := range devices {
-		payload := map[string]interface{}{}
-		for _, mapping := range mappings {
-			sourceValue := getDeviceFieldValue(device, mapping.SourceField)
-			if sourceValue != "" {
-				payload[mapping.TargetField] = sourceValue
-			}
-		}
+	if len(devices) == 0 {
+		return 0, nil
+	}
 
-		if len(payload) == 0 {
+	successCount := 0
+	for _, device := range devices {
+		recordID := strings.TrimSpace(device.FeishuDeviceRecordID)
+
+		if recordID != "" {
+			// 已导入：调用更新接口（PUT）
+			updateURL := createURL + "/" + recordID + "?version=0"
+			payload := buildFeishuUpdatePayload(device)
+			statusCode, body, err := r.feishuDoRequest(http.MethodPut, updateURL, payload)
+			if err != nil {
+				logger.Warn("[飞书导入] 更新设备失败",
+					zap.String("did", device.DID),
+					zap.String("device_record_id", recordID),
+					zap.Error(err),
+				)
+				continue
+			}
+			var resp struct {
+				Code int    `json:"code"`
+				Msg  string `json:"msg"`
+			}
+			_ = json.Unmarshal(body, &resp)
+			if statusCode >= 200 && statusCode < 300 && resp.Code == 0 {
+				successCount++
+			} else {
+				logger.Warn("[飞书导入] 更新设备返回非成功",
+					zap.String("did", device.DID),
+					zap.Int("http_status", statusCode),
+					zap.Int("code", resp.Code),
+					zap.String("msg", resp.Msg),
+				)
+			}
 			continue
 		}
 
-		_, _, err := r.client.DoRaw(http.MethodPost, "https://fsopen.bytedance.net/open-apis/security_and_compliance/v2/device_records", nil, payload)
-		if err == nil {
-			importCount++
+		// 未导入：调用新增接口（POST）
+		payload := buildFeishuCreatePayload(device, mappings)
+		statusCode, body, err := r.feishuDoRequest(http.MethodPost, createURL, payload)
+		if err != nil {
+			logger.Warn("[飞书导入] 新增设备失败",
+				zap.String("did", device.DID),
+				zap.Error(err),
+			)
+			continue
+		}
+		var resp struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				DeviceRecordID string `json:"device_record_id"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(body, &resp)
+		if statusCode >= 200 && statusCode < 300 && resp.Code == 0 {
+			successCount++
+			if resp.Data.DeviceRecordID != "" {
+				_ = r.feishuDevicesRepo.UpdateFeishuDeviceRecordID(device.DID, resp.Data.DeviceRecordID)
+			}
+		} else if resp.Code == 1785010 {
+			// 1785010: 设备已存在，无法通过 identifiers 自动关联，记录日志跳过
+			logger.Warn("[飞书导入] 设备已存在，跳过",
+				zap.String("did", device.DID),
+				zap.String("msg", resp.Msg),
+			)
+		} else {
+			logger.Warn("[飞书导入] 新增设备返回非成功",
+				zap.String("did", device.DID),
+				zap.Int("http_status", statusCode),
+				zap.Int("code", resp.Code),
+				zap.String("msg", resp.Msg),
+			)
 		}
 	}
 
-	return importCount, nil
+	logger.Info("[飞书导入] 导入完成",
+		zap.Int("总数", len(devices)),
+		zap.Int("成功", successCount),
+	)
+	return successCount, nil
 }
 
 func getDeviceFieldValue(device storage.FeishuDeviceItem, fieldName string) string {
@@ -1854,15 +2203,19 @@ func getDeviceFieldValue(device storage.FeishuDeviceItem, fieldName string) stri
 	case "nic_type":
 		return device.NICType
 	case "serial_number":
-		return device.SerialNumber
+		return strings.TrimSpace(device.SerialNumber)
 	case "mac_addr":
-		return device.MacAddr
+		return pickMacAddress(device)
 	case "device_type":
 		return device.DeviceType
 	case "trusted_status":
 		return device.TrustedStatus
 	case "groups_name":
 		return device.GroupsName
+	case "hdd_serial_numbers", "ssd_serial_numbers":
+		return pickDiskSerialNumber(device)
+	case "cpu_serial_number":
+		return strings.TrimSpace(device.CPUSerialNumber)
 	default:
 		return ""
 	}
@@ -3418,4 +3771,480 @@ func extractJSONFromContent(content string) string {
 	}
 
 	return content
+}
+
+// ===================== 自动化审批 =====================
+
+// approvalEventPayload 飞书设备申报事件的通用结构（schema 2.0）。
+// 实际事件体位于 event 字段中，不同租户字段可能略有差异，因此 event 保留为原始 map 以便灵活取值。
+type approvalEventPayload struct {
+	Schema string                 `json:"schema"`
+	Header map[string]interface{} `json:"header"`
+	Event  map[string]interface{} `json:"event"`
+}
+
+// ExtractApprovalEventID 从飞书事件回调体中提取事件 ID（用于幂等）。
+func ExtractApprovalEventID(body map[string]interface{}) string {
+	if header, ok := body["header"].(map[string]interface{}); ok {
+		if v, ok := header["event_id"].(string); ok && v != "" {
+			return v
+		}
+	}
+	if v, ok := body["event_id"].(string); ok && v != "" {
+		return v
+	}
+	return ""
+}
+
+// extractDeviceIdentifier 从设备记录体中提取设备标识，按优先级返回 (标识值, 标识类型)。
+// 飞书 device_apply_event_v2 的设备字段位于 event.device_record 下，
+// 可用标识：serial_number / mac_address / uuid / disk_serial_number / device_name。
+// 用于在飞连中匹配设备的优先级：序列号 → MAC → UUID → 磁盘序列号 → 设备名。
+func extractDeviceIdentifier(event map[string]interface{}) (string, string) {
+	candidates := []struct {
+		field string
+		typ   string
+	}{
+		{"serial_number", "serial_number"},
+		{"mac_address", "mac_address"},
+		{"mac", "mac_address"},
+		{"mac_addr", "mac_address"},
+		{"uuid", "uuid"},
+		{"disk_serial_number", "disk_serial_number"},
+		{"device_name", "device_name"},
+		{"device_id", "device_id"},
+	}
+	for _, c := range candidates {
+		if v, ok := event[c.field]; ok && v != nil {
+			s := strings.TrimSpace(fmt.Sprintf("%v", v))
+			if s != "" {
+				return s, c.typ
+			}
+		}
+	}
+	return "", ""
+}
+
+// findEventMap 从回调体中定位设备字段所在的子结构。
+// 飞书 device_apply_event_v2 的设备字段位于 event.device_record 下；
+// 若不存在则回退到 event，再回退到根 body，以兼容不同版本/自定义事件体。
+func findEventMap(body map[string]interface{}) map[string]interface{} {
+	if event, ok := body["event"].(map[string]interface{}); ok && len(event) > 0 {
+		if record, ok := event["device_record"].(map[string]interface{}); ok && len(record) > 0 {
+			return record
+		}
+		return event
+	}
+	return body
+}
+
+// ProcessDeviceApplyEvent 处理飞书设备申报事件：
+//  1. 提取事件 ID 与设备标识；
+//  2. 幂等检查（同 EventID 不重复处理）；
+//  3. 在飞连中查询设备；
+//  4. 命中白名单分组 → 调用飞书新增设备接口（公司设备+信任设备），状态=auto_approved；
+//  5. 未命中 → 状态=pending，并通过配置的 Webhook 推送设备信息。
+func (r *Runner) ProcessDeviceApplyEvent(ctx context.Context, body map[string]interface{}) error {
+	if r.approvalTaskRepo == nil {
+		return fmt.Errorf("approval task repository is nil")
+	}
+
+	eventID := ExtractApprovalEventID(body)
+	eventMap := findEventMap(body)
+	deviceIdentifier, identifierType := extractDeviceIdentifier(eventMap)
+
+	logger.Info("[自动化审批] 收到设备申报事件",
+		zap.String("event_id", eventID),
+		zap.String("device_identifier", deviceIdentifier),
+		zap.String("identifier_type", identifierType),
+	)
+
+	// 幂等检查：同一事件 ID 已处理过则直接返回
+	if eventID != "" {
+		if existing, ok, err := r.approvalTaskRepo.GetByEventID(eventID); err == nil && ok {
+			logger.Info("[自动化审批] 事件已处理，跳过",
+				zap.String("event_id", eventID),
+				zap.String("status", string(existing.Status)),
+			)
+			return nil
+		}
+	}
+
+	rawPayload, _ := json.Marshal(body)
+	taskID := "appr_" + time.Now().Format("20060102_150405.000")
+	task := storage.ApprovalTask{
+		ID:               taskID,
+		EventID:          eventID,
+		DeviceIdentifier: deviceIdentifier,
+		RawPayload:       string(rawPayload),
+		Status:           storage.ApprovalStatusPending,
+	}
+	if err := r.approvalTaskRepo.Create(task); err != nil {
+		return fmt.Errorf("create approval task: %w", err)
+	}
+
+	// 若未提取到设备标识，直接留存为 pending 并推送 Webhook
+	if deviceIdentifier == "" {
+		logger.Warn("[自动化审批] 未提取到设备标识，留存待审批",
+			zap.String("task_id", taskID),
+		)
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+
+	// 在飞连中查询设备
+	device, err := r.findDeviceInFeilian(deviceIdentifier, identifierType)
+	if err != nil {
+		logger.Warn("[自动化审批] 飞连设备查询失败，留存待审批",
+			zap.String("task_id", taskID),
+			zap.Error(err),
+		)
+		_ = r.approvalTaskRepo.UpdateError(taskID, "feilian query failed: "+err.Error())
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+	if device == nil {
+		logger.Info("[自动化审批] 飞连未找到该设备，留存待审批",
+			zap.String("task_id", taskID),
+			zap.String("device_identifier", deviceIdentifier),
+		)
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+
+	// 加载白名单配置，判断分组是否命中
+	cfg, err := r.getApprovalConfig()
+	if err != nil {
+		_ = r.approvalTaskRepo.UpdateError(taskID, "load config failed: "+err.Error())
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+	if !deviceGroupsHitWhitelist(*device, cfg.GroupIDs) {
+		logger.Info("[自动化审批] 设备不在白名单分组，留存待审批",
+			zap.String("task_id", taskID),
+			zap.String("device_did", device.DID),
+			zap.String("groups_name", device.GroupsName),
+		)
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+
+	// 命中白名单：调用飞书新增设备接口
+	recordID, err := r.createFeishuDeviceRecord(*device)
+	if err != nil {
+		logger.Error("[自动化审批] 飞书新增设备失败",
+			zap.String("task_id", taskID),
+			zap.String("device_did", device.DID),
+			zap.Error(err),
+		)
+		_ = r.approvalTaskRepo.UpdateError(taskID, "feishu create failed: "+err.Error())
+		r.notifyPendingTask(ctx, taskID, body)
+		return nil
+	}
+
+	_ = r.approvalTaskRepo.UpdateFeishuRecordID(taskID, recordID)
+	_ = r.approvalTaskRepo.UpdateStatus(taskID, storage.ApprovalStatusAutoApproved)
+	logger.Info("[自动化审批] 设备自动审批通过",
+		zap.String("task_id", taskID),
+		zap.String("device_did", device.DID),
+		zap.String("feishu_device_record_id", recordID),
+	)
+	return nil
+}
+
+// getApprovalConfig 获取审批配置，若仓储未初始化则返回默认配置。
+func (r *Runner) getApprovalConfig() (*storage.ApprovalConfig, error) {
+	if r.approvalConfigRepo == nil {
+		return &storage.ApprovalConfig{GroupIDs: []string{}}, nil
+	}
+	return r.approvalConfigRepo.Get()
+}
+
+// deviceGroupsHitWhitelist 判断设备所属分组是否与白名单分组有交集。
+func deviceGroupsHitWhitelist(device storage.FeishuDeviceItem, whitelistGroupIDs []string) bool {
+	if len(whitelistGroupIDs) == 0 {
+		return false
+	}
+	whitelist := make(map[string]bool, len(whitelistGroupIDs))
+	for _, id := range whitelistGroupIDs {
+		whitelist[strings.TrimSpace(id)] = true
+	}
+	// 飞连设备的 groups_id 可能是逗号分隔的多个分组 ID
+	for _, gid := range strings.Split(device.GroupsID, ",") {
+		gid = strings.TrimSpace(gid)
+		if gid != "" && whitelist[gid] {
+			return true
+		}
+	}
+	// 兜底：按分组名称匹配（白名单可能存的是名称）
+	for _, name := range strings.Split(device.GroupsName, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" && whitelist[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// findDeviceInFeilian 在飞连中按设备标识查询设备。
+// 优先尝试带过滤参数的查询；若接口不支持或无结果，则全量拉取后本地匹配。
+func (r *Runner) findDeviceInFeilian(identifier, identifierType string) (*storage.FeishuDeviceItem, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("sealsuite client is nil")
+	}
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, nil
+	}
+
+	// 尝试带过滤参数的查询（不同飞连版本参数名可能不同，尝试多个）
+	queryKeys := map[string][]string{
+		"device_id":     {"device_id", "did"},
+		"serial_number": {"serial_number"},
+		"mac_address":   {"mac_address", "mac_addr", "mac"},
+	}
+	keys, ok := queryKeys[identifierType]
+	if !ok {
+		keys = []string{identifierType}
+	}
+	for _, key := range keys {
+		params := map[string]string{key: identifier, "limit": "100", "offset": "0"}
+		_, body, err := r.client.DoRaw(http.MethodGet, "/api/open/v1/device/search", params, nil)
+		if err != nil {
+			continue
+		}
+		if device, found := parseFirstDeviceFromSearch(body, identifier, identifierType); found {
+			return device, nil
+		}
+	}
+
+	// 回退：全量拉取后本地匹配
+	all, err := r.SyncFeishuDevices()
+	if err != nil {
+		return nil, fmt.Errorf("fallback sync devices: %w", err)
+	}
+	for i := range all {
+		if matchDeviceByIdentifier(all[i], identifier, identifierType) {
+			return &all[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// matchDeviceByIdentifier 判断飞连设备是否匹配给定标识。
+func matchDeviceByIdentifier(device storage.FeishuDeviceItem, identifier, identifierType string) bool {
+	identifier = strings.TrimSpace(identifier)
+	switch identifierType {
+	case "device_id":
+		return strings.TrimSpace(device.DID) == identifier
+	case "serial_number":
+		return strings.TrimSpace(device.SerialNumber) == identifier
+	case "mac_address":
+		return strings.EqualFold(strings.TrimSpace(device.MacAddr), identifier) ||
+			strings.Contains(strings.ToLower(device.MacAddrs), strings.ToLower(identifier))
+	}
+	// 未知类型：尝试所有字段
+	return strings.TrimSpace(device.DID) == identifier ||
+		strings.TrimSpace(device.SerialNumber) == identifier ||
+		strings.EqualFold(strings.TrimSpace(device.MacAddr), identifier)
+}
+
+// parseFirstDeviceFromSearch 解析飞连 device/search 响应，返回与标识匹配的第一台设备。
+func parseFirstDeviceFromSearch(body []byte, identifier, identifierType string) (*storage.FeishuDeviceItem, bool) {
+	var resp struct {
+		Data struct {
+			Items   []map[string]interface{} `json:"items"`
+			Devices []map[string]interface{} `json:"devices"`
+		} `json:"data"`
+		Items   []map[string]interface{} `json:"items"`
+		Devices []map[string]interface{} `json:"devices"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, false
+	}
+	rawItems := resp.Data.Items
+	if len(rawItems) == 0 {
+		rawItems = resp.Data.Devices
+	}
+	if len(rawItems) == 0 {
+		rawItems = resp.Items
+	}
+	if len(rawItems) == 0 {
+		rawItems = resp.Devices
+	}
+	for _, raw := range rawItems {
+		item := parseFeishuDeviceItemForApproval(raw)
+		if matchDeviceByIdentifier(item, identifier, identifierType) {
+			return &item, true
+		}
+	}
+	return nil, false
+}
+
+// parseFeishuDeviceItemForApproval 将飞连设备原始 map 解析为 FeishuDeviceItem（仅提取审批所需字段）。
+func parseFeishuDeviceItemForApproval(raw map[string]interface{}) storage.FeishuDeviceItem {
+	device := storage.FeishuDeviceItem{}
+	deviceInfo, _ := raw["device_info"].(map[string]interface{})
+	getField := func(key string) string {
+		if v, ok := raw[key]; ok && v != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		if deviceInfo != nil {
+			if v, ok := deviceInfo[key]; ok && v != nil {
+				return fmt.Sprintf("%v", v)
+			}
+		}
+		return ""
+	}
+	device.DID = getField("did")
+	device.UserID = getField("user_id")
+	device.DeviceName = getField("device_name")
+	if device.DeviceName == "" {
+		device.DeviceName = getField("name")
+	}
+	device.FullName = getField("full_name")
+	device.OS = getField("os")
+	device.SerialNumber = getField("serial_number")
+	device.MacAddr = getField("mac_addr")
+	device.MacAddrs = getField("mac_addrs")
+	device.HDDSerialNumbers = getField("hdd_serial_numbers")
+	device.SSDSerialNumbers = getField("ssd_serial_numbers")
+	device.CPUSerialNumber = getField("cpu_serial_number")
+	device.GroupsID = getField("groups_id")
+	device.GroupsName = getField("groups_name")
+	device.TrustedStatus = getField("trusted_status")
+	return device
+}
+
+// createFeishuDeviceRecord 调用飞书新增设备接口，将设备作为公司设备+信任设备写入。
+// 复用 buildFeishuCreatePayload 构建请求体；返回 device_record_id。
+func (r *Runner) createFeishuDeviceRecord(device storage.FeishuDeviceItem) (string, error) {
+	api, err := r.getActiveFeishuAPI()
+	if err != nil {
+		return "", err
+	}
+	baseURL := strings.TrimRight(api.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://open.feishu.cn"
+	}
+	createURL := baseURL + "/open-apis/security_and_compliance/v2/device_records"
+
+	mappings, err := r.fieldMappingRepo.GetEnabledMappings()
+	if err != nil {
+		return "", fmt.Errorf("get field mappings: %w", err)
+	}
+
+	// 强制覆盖：公司设备 + 信任设备（审批通过语义）
+	payload := buildFeishuCreatePayload(device, mappings)
+	payload["device_ownership"] = 2
+	payload["device_status"] = 1
+
+	statusCode, body, err := r.feishuDoRequest(http.MethodPost, createURL, payload)
+	if err != nil {
+		return "", fmt.Errorf("feishu create device record: %w", err)
+	}
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			DeviceRecordID string `json:"device_record_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("parse feishu create response: %w (raw: %s)", err, string(body))
+	}
+	if statusCode < 200 || statusCode >= 300 || resp.Code != 0 {
+		return "", fmt.Errorf("feishu create device record failed: http=%d code=%d msg=%s", statusCode, resp.Code, resp.Msg)
+	}
+	return resp.Data.DeviceRecordID, nil
+}
+
+// notifyPendingTask 对待审批任务推送 Webhook 通知。
+func (r *Runner) notifyPendingTask(ctx context.Context, taskID string, event map[string]interface{}) {
+	if r.approvalConfigRepo == nil || r.webhookRepo == nil {
+		return
+	}
+	cfg, err := r.approvalConfigRepo.Get()
+	if err != nil || cfg.WebhookID == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	env := webhook.Envelope{
+		Event:      "approval.pending",
+		SourceType: "approval_task",
+		SourceID:   taskID,
+		SourceName: "设备申报待审批",
+		Timestamp:  time.Now().Format(time.RFC3339),
+		Data:       event,
+	}
+	delivery := webhook.DeliveryResult{Attempted: false}
+	item, ok, err := getWebhookFromRepo(r.webhookRepo, cfg.WebhookID)
+	if err == nil && ok {
+		delivery = webhook.DeliverWebhookForSuccess(ctx, item, env)
+	}
+	deliveryJSON, _ := json.Marshal(delivery)
+	_ = r.approvalTaskRepo.UpdateWebhookDelivery(taskID, string(deliveryJSON))
+}
+
+// ApproveTask 手动通过待审批任务：调用飞书新增设备接口，状态置为 approved。
+func (r *Runner) ApproveTask(ctx context.Context, taskID string) error {
+	if r.approvalTaskRepo == nil {
+		return fmt.Errorf("approval task repository is nil")
+	}
+	task, ok, err := r.approvalTaskRepo.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("approval task not found: %s", taskID)
+	}
+	// 从原始 payload 中提取设备并在飞连中查询
+	var body map[string]interface{}
+	if err := json.Unmarshal([]byte(task.RawPayload), &body); err != nil {
+		return fmt.Errorf("parse task payload: %w", err)
+	}
+	eventMap := findEventMap(body)
+	deviceIdentifier, identifierType := extractDeviceIdentifier(eventMap)
+	if deviceIdentifier == "" {
+		return fmt.Errorf("no device identifier in task payload")
+	}
+	device, err := r.findDeviceInFeilian(deviceIdentifier, identifierType)
+	if err != nil {
+		return fmt.Errorf("find device in feilian: %w", err)
+	}
+	if device == nil {
+		return fmt.Errorf("device not found in feilian: %s", deviceIdentifier)
+	}
+	recordID, err := r.createFeishuDeviceRecord(*device)
+	if err != nil {
+		return err
+	}
+	_ = r.approvalTaskRepo.UpdateFeishuRecordID(taskID, recordID)
+	_ = r.approvalTaskRepo.UpdateStatus(taskID, storage.ApprovalStatusApproved)
+	return nil
+}
+
+// RejectTask 手动驳回待审批任务。
+func (r *Runner) RejectTask(taskID string) error {
+	if r.approvalTaskRepo == nil {
+		return fmt.Errorf("approval task repository is nil")
+	}
+	_, ok, err := r.approvalTaskRepo.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("approval task not found: %s", taskID)
+	}
+	return r.approvalTaskRepo.UpdateStatus(taskID, storage.ApprovalStatusRejected)
+}
+
+// getWebhookFromRepo 从 Webhook 仓储加载指定配置（与 web 包内同名函数保持一致，避免循环依赖）。
+func getWebhookFromRepo(repo *sqliteRepo.WebhookRepository, id string) (*storage.WebhookItem, bool, error) {
+	if repo == nil {
+		return nil, false, fmt.Errorf("webhook repository is nil")
+	}
+	return repo.Get(id)
 }

@@ -82,6 +82,9 @@ function setView(name) {
   if (name === 'guest-wifi') {
     initGuestWifiPage();
   }
+  if (name === 'approval') {
+    initApprovalPage();
+  }
 }
 
 qsa('.navbtn').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -329,6 +332,26 @@ function getWebhookProviderValue(provider) {
 
 function getWebhookProviderLabel(provider) {
   return getWebhookProviderValue(provider) === 'feishu_bot' ? '飞书机器人' : '通用 webhook';
+}
+
+// 将飞书机器人消息类型归一化为 text / post / interactive，默认 text
+function normalizeWebhookMsgType(msgType) {
+  const t = String(msgType || '').trim().toLowerCase();
+  if (t === 'post') return 'post';
+  if (t === 'interactive' || t === 'card') return 'interactive';
+  return 'text';
+}
+
+// 飞书消息类型的中文标签
+function getWebhookMsgTypeLabel(msgType) {
+  switch (normalizeWebhookMsgType(msgType)) {
+    case 'post':
+      return 'post 富文本';
+    case 'interactive':
+      return 'interactive 卡片';
+    default:
+      return 'text 纯文本';
+  }
 }
 
 function getWebhookCatalogItem(id) {
@@ -1092,6 +1115,8 @@ function buildDefaultWebhookDraft() {
     provider: 'generic',
     headers: defaultWebhookHeaders(),
     body_template: defaultWebhookBodyTemplate(),
+    msg_type: 'text',
+    secret: '',
     enabled: true
   };
 }
@@ -1131,6 +1156,8 @@ function fillWebhookForm(item, opts) {
   if (qs('#webhook-method')) qs('#webhook-method').value = (cfg.method || 'POST').toUpperCase();
   if (qs('#webhook-headers')) qs('#webhook-headers').value = pretty(cfg.headers || defaultWebhookHeaders());
   if (qs('#webhook-body-template')) qs('#webhook-body-template').value = cfg.body_template || defaultWebhookBodyTemplate();
+  if (qs('#webhook-msg-type')) qs('#webhook-msg-type').value = normalizeWebhookMsgType(cfg.msg_type);
+  if (qs('#webhook-secret')) qs('#webhook-secret').value = cfg.secret || '';
   if (qs('#webhook-test-payload')) {
     const keepCurrent = options.preserveTestPayload && qs('#webhook-test-payload').value.trim();
     qs('#webhook-test-payload').value = keepCurrent
@@ -1150,6 +1177,8 @@ function getWebhookPayload() {
     provider: getWebhookProviderValue(qs('#webhook-provider')?.value || 'generic'),
     headers: parseJSONObjectSafe(qs('#webhook-headers')?.value || '{}', 'webhook headers', {}),
     body_template: qs('#webhook-body-template')?.value || '',
+    msg_type: normalizeWebhookMsgType(qs('#webhook-msg-type')?.value || 'text'),
+    secret: qs('#webhook-secret')?.value || '',
     enabled: current ? current.enabled !== false : true
   };
 }
@@ -1159,6 +1188,9 @@ function renderWebhookProviderState() {
   const isFeishu = provider === 'feishu_bot';
   const bodyField = qs('#webhook-body-template');
   const hint = qs('#webhook-provider-hint');
+  const feishuSection = qs('#webhook-feishu-section');
+  // 飞书机器人设置区仅在 provider=feishu_bot 时展示
+  if (feishuSection) feishuSection.classList.toggle('hidden', !isFeishu);
   if (bodyField) {
     bodyField.readOnly = isFeishu;
     bodyField.setAttribute('aria-readonly', isFeishu ? 'true' : 'false');
@@ -1167,9 +1199,13 @@ function renderWebhookProviderState() {
       : '{"title":"{{source_name}}","message":"{{jsonString data}}"}';
   }
   if (hint) {
-    hint.textContent = isFeishu
-      ? '系统将自动按飞书机器人格式生成 payload，无需手工填写 body_template。'
-      : '通用 webhook 使用自定义 body_template。';
+    if (isFeishu) {
+      const msgLabel = getWebhookMsgTypeLabel(qs('#webhook-msg-type')?.value || 'text');
+      const hasSecret = !!(qs('#webhook-secret')?.value || '').trim();
+      hint.textContent = `系统自动按飞书机器人协议生成 ${msgLabel} 消息${hasSecret ? '，并使用 secret 自动加签' : ''}，无需填写 body_template。`;
+    } else {
+      hint.textContent = '通用 webhook 使用自定义 body_template。';
+    }
   }
 }
 
@@ -1260,7 +1296,7 @@ function renderWebhookList(items) {
         <span class="pill ${it.enabled === false ? '' : 'ok'}">${it.enabled === false ? 'DISABLED' : 'ENABLED'}</span>
       </div>
       <div class="subtitle u-mt-8"><span class="pill">${escapeHtml((it.method || 'POST').toUpperCase())}</span> <code>${escapeHtml(it.url || '')}</code></div>
-      <div class="subtitle"><span class="pill">${escapeHtml(getWebhookProviderLabel(it.provider))}</span> headers: ${Object.keys(it.headers || {}).length} · body-template: ${(it.body_template || '').trim() ? '已配置' : '空'}</div>
+      <div class="subtitle"><span class="pill">${escapeHtml(getWebhookProviderLabel(it.provider))}</span>${getWebhookProviderValue(it.provider) === 'feishu_bot' ? ` <span class="pill">${escapeHtml(getWebhookMsgTypeLabel(it.msg_type))}</span>${(it.secret || '').trim() ? ' <span class="pill ok">已加签</span>' : ''} ·` : ''} headers: ${Object.keys(it.headers || {}).length} · body-template: ${(it.body_template || '').trim() ? '已配置' : '空'}</div>
       <div class="api-task-actions">
         <button class="btn" data-act="open-webhook" data-id="${escapeHtml(it.id || '')}">查看</button>
       </div>
@@ -1280,6 +1316,8 @@ function renderWebhookList(items) {
 qs('#btn-webhook-refresh')?.addEventListener('click', () => refreshWebhooks(false));
 qs('#btn-webhook-create')?.addEventListener('click', () => openWebhookCreateMode(false));
 qs('#webhook-provider')?.addEventListener('change', () => renderWebhookProviderState());
+qs('#webhook-msg-type')?.addEventListener('change', () => renderWebhookProviderState());
+qs('#webhook-secret')?.addEventListener('input', () => renderWebhookProviderState());
 qs('#btn-webhook-save')?.addEventListener('click', async () => {
   try {
     const payload = getWebhookPayload();
@@ -1296,6 +1334,8 @@ qs('#btn-webhook-save')?.addEventListener('click', async () => {
       url: payload.url,
       provider: payload.provider,
       method: payload.method,
+      msg_type: payload.msg_type,
+      secret_configured: !!(payload.secret || ''),
       headers: payload.headers,
       body_template: payload.body_template
     });
@@ -1337,6 +1377,8 @@ qs('#btn-webhook-test')?.addEventListener('click', async () => {
         method: (qs('#webhook-method')?.value || 'POST').toUpperCase(),
         headers: parseJSONObjectSafe(qs('#webhook-headers')?.value || '{}', 'webhook headers', {}),
         body_template: qs('#webhook-body-template')?.value || '',
+        msg_type: normalizeWebhookMsgType(qs('#webhook-msg-type')?.value || 'text'),
+        secret: qs('#webhook-secret')?.value || '',
         payload
       })
     });
@@ -1419,6 +1461,8 @@ function fillFeishuAPIForm(item) {
   if (qs('#feishu-api-app-secret')) qs('#feishu-api-app-secret').value = '';
   if (qs('#feishu-api-base-url')) qs('#feishu-api-base-url').value = item.base_url || '';
   if (qs('#feishu-api-enabled')) qs('#feishu-api-enabled').value = String(item.enabled !== false);
+  // 回显激活状态：编辑已激活项时若不勾选会导致保存后被停用，因此必须同步勾选状态
+  if (qs('#feishu-activate')) qs('#feishu-activate').checked = !!item.active;
 }
 
 function buildDefaultFeishuAPIDraft() {
@@ -2445,10 +2489,14 @@ function renderFeishuDevicesPage() {
       const rows = items.map((it) => {
         const did = it.did || '';
         const name = it.serial_number || it.mac_addr || did;
+        const imported = !!it.feishu_device_record_id;
+        const importBadge = imported
+          ? '<span class="status-badge status-imported">已导入飞书</span>'
+          : '<span class="status-badge status-unimported">未导入</span>';
         return `
           <div class="job-row">
             <div class="job-row-info">
-              <div class="job-row-name">${escapeHtml(name)}</div>
+              <div class="job-row-name">${escapeHtml(name)} ${importBadge}</div>
               <div class="job-row-sub">
                 <span>DID：${escapeHtml(did)}</span>
                 <span>OS：${escapeHtml(it.os || '-')}</span>
@@ -7829,4 +7877,233 @@ function guestRenderCreateResult(data) {
   title.textContent = `批量创建完成：${result}`;
   boxNode.appendChild(title);
   guestRenderSummary(boxNode);
+}
+
+// ===================== 自动化审批 =====================
+
+let approvalInited = false;
+
+function initApprovalPage() {
+  if (approvalInited) {
+    loadApprovalTasks();
+    return;
+  }
+  approvalInited = true;
+
+  // 绑定事件
+  const saveBtn = qs('#btn-approval-save-config');
+  if (saveBtn) saveBtn.addEventListener('click', saveApprovalConfig);
+  const refreshGroupsBtn = qs('#btn-approval-refresh-groups');
+  if (refreshGroupsBtn) refreshGroupsBtn.addEventListener('click', () => loadApprovalGroups(true));
+  const refreshTasksBtn = qs('#btn-approval-refresh-tasks');
+  if (refreshTasksBtn) refreshTasksBtn.addEventListener('click', loadApprovalTasks);
+  const statusFilter = qs('#approval-status-filter');
+  if (statusFilter) statusFilter.addEventListener('change', loadApprovalTasks);
+
+  // 显示 Webhook 回调地址
+  const urlNode = qs('#approval-webhook-url');
+  if (urlNode) {
+    const base = window.location.origin;
+    urlNode.textContent = base + '/api/v1/approval/webhook';
+  }
+
+  // 加载配置、分组、Webhook、任务
+  loadApprovalConfig();
+  loadApprovalGroups(false);
+  loadApprovalWebhooks();
+  loadApprovalTasks();
+}
+
+// 加载审批配置
+async function loadApprovalConfig() {
+  try {
+    const cfg = await fetchJSON('/api/v1/approval/config');
+    const enabledCb = qs('#approval-enabled');
+    if (enabledCb) enabledCb.checked = !!cfg.enabled;
+    const webhookSelect = qs('#approval-webhook');
+    if (webhookSelect) {
+      // 等 webhook 选项加载完再选值
+      const interval = setInterval(() => {
+        if (webhookSelect.options.length > 1) {
+          webhookSelect.value = cfg.webhook_id || '';
+          clearInterval(interval);
+        }
+      }, 100);
+      setTimeout(() => clearInterval(interval), 5000);
+    }
+    // 选中白名单分组
+    const groupIDs = Array.isArray(cfg.group_ids) ? cfg.group_ids : [];
+    window.__approvalSelectedGroupIDs = groupIDs.slice();
+    renderApprovalGroupCheckboxes(window.__approvalGroupsCache || [], groupIDs);
+    setApprovalHint('配置已加载');
+  } catch (e) {
+    setApprovalHint('加载配置失败：' + String(e));
+  }
+}
+
+// 加载设备分组列表
+async function loadApprovalGroups(forceRefresh) {
+  try {
+    const url = forceRefresh ? '/api/v1/device-groups/refresh' : '/api/v1/device-groups';
+    const data = await fetchJSON(url, forceRefresh ? { method: 'POST' } : undefined);
+    const items = Array.isArray(data.items) ? data.items : [];
+    window.__approvalGroupsCache = items;
+    const selected = window.__approvalSelectedGroupIDs || [];
+    renderApprovalGroupCheckboxes(items, selected);
+    if (forceRefresh) toast('自动化审批', `已刷新 ${items.length} 个分组`, 'ok');
+  } catch (e) {
+    setApprovalHint('加载分组失败：' + String(e));
+  }
+}
+
+// 渲染分组多选框
+function renderApprovalGroupCheckboxes(groups, selectedIDs) {
+  const container = qs('#approval-groups');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!groups.length) {
+    container.innerHTML = '<span class="subtitle">暂无分组，请先到「设备分组」页面同步</span>';
+    return;
+  }
+  const selected = new Set(selectedIDs || []);
+  groups.forEach(g => {
+    const id = String(g.id || '');
+    const label = document.createElement('label');
+    label.className = 'checkbox-label approval-group-label';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = id;
+    cb.checked = selected.has(id);
+    cb.addEventListener('change', () => {
+      const set = new Set(window.__approvalSelectedGroupIDs || []);
+      if (cb.checked) set.add(id); else set.delete(id);
+      window.__approvalSelectedGroupIDs = Array.from(set);
+    });
+    const span = document.createElement('span');
+    span.textContent = `${g.name || id}（${id}）`;
+    label.appendChild(cb);
+    label.appendChild(span);
+    container.appendChild(label);
+  });
+}
+
+// 加载 Webhook 列表填充下拉
+async function loadApprovalWebhooks() {
+  try {
+    const data = await fetchJSON('/api/v1/settings/webhooks');
+    const items = Array.isArray(data.items) ? data.items : [];
+    const select = qs('#approval-webhook');
+    if (!select) return;
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">（不推送）</option>';
+    items.forEach(w => {
+      const opt = document.createElement('option');
+      opt.value = String(w.id || '');
+      opt.textContent = w.name || w.id || '未命名 Webhook';
+      select.appendChild(opt);
+    });
+    select.value = currentValue;
+  } catch (e) {
+    setApprovalHint('加载 Webhook 列表失败：' + String(e));
+  }
+}
+
+// 保存审批配置
+async function saveApprovalConfig() {
+  const groupIDs = window.__approvalSelectedGroupIDs || [];
+  const payload = {
+    group_ids: groupIDs,
+    webhook_id: qs('#approval-webhook')?.value.trim() || '',
+    enabled: qs('#approval-enabled')?.checked === true
+  };
+  try {
+    await fetchJSON('/api/v1/approval/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    setApprovalHint('配置已保存');
+    toast('自动化审批', '配置已保存', 'ok');
+  } catch (e) {
+    setApprovalHint('保存失败：' + String(e));
+    toast('自动化审批', '保存失败：' + String(e), '');
+  }
+}
+
+// 加载审批任务列表
+async function loadApprovalTasks() {
+  const tbody = qs('#approval-tasks-body');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中…</td></tr>';
+  try {
+    const status = qs('#approval-status-filter')?.value || '';
+    const url = '/api/v1/approval/tasks' + (status ? '?status=' + encodeURIComponent(status) : '');
+    const data = await fetchJSON(url);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    items.forEach(task => {
+      const tr = document.createElement('tr');
+      const statusBadge = approvalStatusBadge(task.status);
+      const actions = task.status === 'pending'
+        ? `<button class="btn small" data-approve="${task.id}">通过</button> <button class="btn small danger" data-reject="${task.id}">驳回</button>`
+        : '<span class="subtitle">—</span>';
+      tr.innerHTML = `
+        <td title="${task.id}">${task.id}</td>
+        <td title="${task.device_identifier}">${task.device_identifier || '—'}</td>
+        <td>${statusBadge}</td>
+        <td title="${task.feishu_device_record_id}">${task.feishu_device_record_id || '—'}</td>
+        <td title="${task.error_message}">${task.error_message ? task.error_message.slice(0, 60) : '—'}</td>
+        <td>${task.created_at || ''}</td>
+        <td>${actions}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    // 绑定通过/驳回
+    qsa('[data-approve]').forEach(btn => btn.addEventListener('click', () => approveTask(btn.dataset.approve)));
+    qsa('[data-reject]').forEach(btn => btn.addEventListener('click', () => rejectTask(btn.dataset.reject)));
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">加载失败：${String(e)}</td></tr>`;
+  }
+}
+
+function approvalStatusBadge(status) {
+  const map = {
+    pending: { label: '待审批', cls: 'badge-pending' },
+    auto_approved: { label: '自动通过', cls: 'badge-ok' },
+    approved: { label: '人工通过', cls: 'badge-ok' },
+    rejected: { label: '已驳回', cls: 'badge-danger' }
+  };
+  const m = map[status] || { label: status || '—', cls: '' };
+  return `<span class="approval-badge ${m.cls}">${m.label}</span>`;
+}
+
+async function approveTask(id) {
+  if (!confirm(`确认通过任务 ${id}？将调用飞书新增设备接口。`)) return;
+  try {
+    await fetchJSON(`/api/v1/approval/tasks/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+    toast('自动化审批', '已通过', 'ok');
+    loadApprovalTasks();
+  } catch (e) {
+    toast('自动化审批', '通过失败：' + String(e), '');
+  }
+}
+
+async function rejectTask(id) {
+  if (!confirm(`确认驳回任务 ${id}？`)) return;
+  try {
+    await fetchJSON(`/api/v1/approval/tasks/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+    toast('自动化审批', '已驳回', 'ok');
+    loadApprovalTasks();
+  } catch (e) {
+    toast('自动化审批', '驳回失败：' + String(e), '');
+  }
+}
+
+function setApprovalHint(msg) {
+  const node = qs('#approval-config-hint');
+  if (node) node.textContent = msg || '';
 }

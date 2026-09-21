@@ -3,10 +3,14 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,7 +135,7 @@ func buildWebhookRequestBody(item *storage.WebhookItem, env Envelope, genericPay
 	}
 	switch normalizeWebhookProvider(item.Provider) {
 	case "feishu_bot":
-		return buildFeishuBotBody(env)
+		return buildFeishuBotBody(item, env)
 	default:
 		return buildGenericWebhookBody(item, env, genericPayload)
 	}
@@ -156,19 +160,151 @@ func buildGenericWebhookBody(item *storage.WebhookItem, env Envelope, payload in
 	return []byte(rendered), nil
 }
 
-func buildFeishuBotBody(env Envelope) ([]byte, error) {
-	text := fmt.Sprintf("【%s】执行成功\n类型: %s\n时间: %s\n结果:\n%s",
+// NormalizeFeishuMsgType 将飞书机器人消息类型归一化为 text / post / interactive，默认 text。
+func NormalizeFeishuMsgType(msgType string) string {
+	switch strings.ToLower(strings.TrimSpace(msgType)) {
+	case "post":
+		return "post"
+	case "interactive", "card":
+		return "interactive"
+	default:
+		return "text"
+	}
+}
+
+// buildFeishuBotBody 按配置生成飞书自定义群机器人消息体。
+// 根据 item.MsgType 生成 text / post / interactive 三种消息；
+// 当 item.Secret 非空（机器人启用了“签名校验”）时，补充 timestamp 与 sign 字段。
+func buildFeishuBotBody(item *storage.WebhookItem, env Envelope) ([]byte, error) {
+	msgType := NormalizeFeishuMsgType(item.MsgType)
+
+	var payload map[string]interface{}
+	switch msgType {
+	case "post":
+		payload = buildFeishuPostPayload(env)
+	case "interactive":
+		payload = buildFeishuCardPayload(env)
+	default:
+		payload = buildFeishuTextPayload(env)
+	}
+
+	// 加签：飞书机器人安全设置启用“签名校验”后，每次请求都必须携带 timestamp 与 sign。
+	if secret := strings.TrimSpace(item.Secret); secret != "" {
+		timestamp := time.Now().Unix()
+		payload["timestamp"] = strconv.FormatInt(timestamp, 10)
+		payload["sign"] = genFeishuBotSign(timestamp, secret)
+	}
+	return json.Marshal(payload)
+}
+
+// buildFeishuTextPayload 构造 text 纯文本消息。
+func buildFeishuTextPayload(env Envelope) map[string]interface{} {
+	text := fmt.Sprintf("【%s】执行通知\n类型: %s\n时间: %s\n结果:\n%s",
 		env.SourceName,
 		env.SourceType,
 		env.Timestamp,
 		mustJSONString(env.Data),
 	)
-	return json.Marshal(map[string]interface{}{
+	return map[string]interface{}{
 		"msg_type": "text",
 		"content": map[string]interface{}{
 			"text": text,
 		},
-	})
+	}
+}
+
+// buildFeishuPostPayload 构造 post 富文本消息（zh_cn），标题+分段正文。
+func buildFeishuPostPayload(env Envelope) map[string]interface{} {
+	// content 为二维数组：每个子数组代表一行，行内可包含多个不同 tag 的元素。
+	content := [][]interface{}{
+		{
+			map[string]interface{}{
+				"tag":  "text",
+				"text": fmt.Sprintf("类型：%s\n时间：%s", env.SourceType, env.Timestamp),
+			},
+		},
+		{
+			map[string]interface{}{
+				"tag":  "text",
+				"text": "执行结果：",
+			},
+		},
+		{
+			map[string]interface{}{
+				"tag":  "text",
+				"text": mustJSONString(env.Data),
+			},
+		},
+	}
+	return map[string]interface{}{
+		"msg_type": "post",
+		"content": map[string]interface{}{
+			"post": map[string]interface{}{
+				"zh_cn": map[string]interface{}{
+					"title":   fmt.Sprintf("【%s】执行通知", env.SourceName),
+					"content": content,
+				},
+			},
+		},
+	}
+}
+
+// buildFeishuCardPayload 构造 interactive 交互卡片消息：蓝色标题 + 类型/时间字段 + 分隔线 + 结果代码块。
+func buildFeishuCardPayload(env Envelope) map[string]interface{} {
+	return map[string]interface{}{
+		"msg_type": "interactive",
+		"card": map[string]interface{}{
+			"config": map[string]interface{}{
+				"wide_screen_mode": true,
+			},
+			"header": map[string]interface{}{
+				"template": "blue",
+				"title": map[string]interface{}{
+					"tag":     "plain_text",
+					"content": fmt.Sprintf("【%s】执行通知", env.SourceName),
+				},
+			},
+			"elements": []interface{}{
+				map[string]interface{}{
+					"tag": "div",
+					"fields": []interface{}{
+						map[string]interface{}{
+							"is_short": true,
+							"text": map[string]interface{}{
+								"tag":     "lark_md",
+								"content": fmt.Sprintf("**类型**\n%s", env.SourceType),
+							},
+						},
+						map[string]interface{}{
+							"is_short": true,
+							"text": map[string]interface{}{
+								"tag":     "lark_md",
+								"content": fmt.Sprintf("**时间**\n%s", env.Timestamp),
+							},
+						},
+					},
+				},
+				map[string]interface{}{
+					"tag": "hr",
+				},
+				map[string]interface{}{
+					"tag": "div",
+					"text": map[string]interface{}{
+						"tag":     "lark_md",
+						"content": fmt.Sprintf("**执行结果**\n```\n%s\n```", mustJSONString(env.Data)),
+					},
+				},
+			},
+		},
+	}
+}
+
+// genFeishuBotSign 计算飞书自定义机器人加签签名。
+// 算法：string_to_sign = "{timestamp}\n{secret}"，将其作为 HMAC-SHA256 的密钥、对空消息求摘要，再做 base64 编码。
+func genFeishuBotSign(timestamp int64, secret string) string {
+	stringToSign := fmt.Sprintf("%d\n%s", timestamp, secret)
+	mac := hmac.New(sha256.New, []byte(stringToSign))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func renderWebhookTemplate(tmpl string, env Envelope) (string, error) {

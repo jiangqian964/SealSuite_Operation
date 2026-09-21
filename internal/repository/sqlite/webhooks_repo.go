@@ -22,6 +22,7 @@ func (r *WebhookRepository) Load() (*storage.WebhookFile, error) {
 	rows, err := r.db.Query(`
 		SELECT
 			id, name, provider, url, method, headers_json, auth_type, body_template,
+			secret, msg_type,
 			timeout_sec, retry_count, enabled, created_at
 		FROM webhooks
 		ORDER BY created_at ASC, id ASC
@@ -49,6 +50,7 @@ func (r *WebhookRepository) Get(id string) (*storage.WebhookItem, bool, error) {
 	row := r.db.QueryRow(`
 		SELECT
 			id, name, provider, url, method, headers_json, auth_type, body_template,
+			secret, msg_type,
 			timeout_sec, retry_count, enabled, created_at
 		FROM webhooks
 		WHERE id = ?
@@ -71,6 +73,8 @@ func (r *WebhookRepository) Upsert(item storage.WebhookItem) error {
 	item.Method = strings.TrimSpace(item.Method)
 	item.AuthType = strings.TrimSpace(item.AuthType)
 	item.BodyTmpl = strings.TrimSpace(item.BodyTmpl)
+	item.Secret = strings.TrimSpace(item.Secret)
+	item.MsgType = webhook.NormalizeFeishuMsgType(item.MsgType)
 
 	existing, ok, err := r.Get(item.ID)
 	if err != nil {
@@ -87,8 +91,9 @@ func (r *WebhookRepository) Upsert(item storage.WebhookItem) error {
 	_, err = r.db.Exec(`
 		INSERT INTO webhooks (
 			id, name, provider, url, method, headers_json, auth_type, body_template,
+			secret, msg_type,
 			timeout_sec, retry_count, enabled, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			provider = excluded.provider,
@@ -97,12 +102,15 @@ func (r *WebhookRepository) Upsert(item storage.WebhookItem) error {
 			headers_json = excluded.headers_json,
 			auth_type = excluded.auth_type,
 			body_template = excluded.body_template,
+			secret = excluded.secret,
+			msg_type = excluded.msg_type,
 			timeout_sec = excluded.timeout_sec,
 			retry_count = excluded.retry_count,
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at
 	`, item.ID, item.Name, item.Provider, item.URL, item.Method,
 		mustJSON(item.Headers), item.AuthType, item.BodyTmpl,
+		item.Secret, item.MsgType,
 		item.TimeoutSec, item.RetryCount, boolToInt(item.Enabled), item.CreatedAt, now)
 	return err
 }
@@ -138,6 +146,8 @@ func scanWebhook(s scanner) (storage.WebhookItem, error) {
 		&headers,
 		&item.AuthType,
 		&item.BodyTmpl,
+		&item.Secret,
+		&item.MsgType,
 		&item.TimeoutSec,
 		&item.RetryCount,
 		&enabled,
@@ -148,6 +158,7 @@ func scanWebhook(s scanner) (storage.WebhookItem, error) {
 	}
 	item.Enabled = intToBool(enabled)
 	item.Provider = webhook.NormalizeProvider(item.Provider)
+	item.MsgType = webhook.NormalizeFeishuMsgType(item.MsgType)
 	if err := scanJSON(headers, "{}", &item.Headers); err != nil {
 		return storage.WebhookItem{}, err
 	}

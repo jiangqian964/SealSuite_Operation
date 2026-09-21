@@ -31,6 +31,8 @@ func TestMigrateCreatesCoreTables(t *testing.T) {
 		"app_meta",
 		"job_runs",
 		"audit_logs",
+		"approval_config",
+		"approval_tasks",
 	}
 
 	for _, table := range required {

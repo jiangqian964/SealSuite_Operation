@@ -28,8 +28,10 @@ type FeishuDeviceItem struct {
 	GroupsMode          string `json:"groups_mode"`
 	DeviceType          string `json:"device_type"`
 	TrustedStatus       string `json:"trusted_status"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
+	// FeishuDeviceRecordID 飞书设备记录 ID，非空表示该设备已导入飞书，可用于更新接口
+	FeishuDeviceRecordID string `json:"feishu_device_record_id"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 type FeishuDeviceSyncState struct {
@@ -54,13 +56,12 @@ type FieldMappingItem struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
+// DefaultFieldMappings 默认字段映射（飞连字段 -> 飞书设备记录字段）
+// 注意：device_system / device_ownership / device_status 为必填 int 字段，
+// 在导入逻辑中根据飞连 os / trusted_status 自动转换，不在此映射表中配置。
 var DefaultFieldMappings = []FieldMappingItem{
-	{SourceField: "os", SourceLabel: "操作系统", TargetField: "device_system", TargetLabel: "设备系统", Enabled: false},
-	{SourceField: "serial_number", SourceLabel: "序列号", TargetField: "serial_number", TargetLabel: "序列号", Enabled: false},
-	{SourceField: "mac_addr", SourceLabel: "MAC地址", TargetField: "mac_address", TargetLabel: "MAC地址", Enabled: false},
-	{SourceField: "device_type", SourceLabel: "设备类型", TargetField: "device_type", TargetLabel: "设备类型", Enabled: false},
-	{SourceField: "trusted_status", SourceLabel: "信任状态", TargetField: "trusted_status", TargetLabel: "信任状态", Enabled: false},
-	{SourceField: "user_id", SourceLabel: "用户ID", TargetField: "user_id", TargetLabel: "用户ID", Enabled: false},
-	{SourceField: "client_ip", SourceLabel: "客户端IP", TargetField: "ip_address", TargetLabel: "IP地址", Enabled: false},
-	{SourceField: "groups_name", SourceLabel: "分组名称", TargetField: "group_name", TargetLabel: "分组名称", Enabled: false},
+	{SourceField: "serial_number", SourceLabel: "序列号", TargetField: "serial_number", TargetLabel: "序列号", Enabled: true},
+	{SourceField: "hdd_serial_numbers", SourceLabel: "硬盘序列号", TargetField: "disk_serial_number", TargetLabel: "磁盘序列号", Enabled: true},
+	{SourceField: "mac_addr", SourceLabel: "MAC地址", TargetField: "mac_address", TargetLabel: "MAC地址", Enabled: true},
+	{SourceField: "cpu_serial_number", SourceLabel: "CPU序列号", TargetField: "uuid", TargetLabel: "主板UUID", Enabled: false},
 }

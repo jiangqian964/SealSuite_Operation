@@ -115,6 +115,8 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		complexTaskRepo     *sqliteRepo.ComplexTaskRepository
 		externalIPSyncRepo  *sqliteRepo.ExternalIPSyncTaskRepository
 		jobRunsRepo         *sqliteRepo.JobRunsRepository
+		approvalConfigRepo  *sqliteRepo.ApprovalConfigRepository
+		approvalTaskRepo    *sqliteRepo.ApprovalTaskRepository
 	)
 	if appDB != nil {
 		taskDraftRepo = sqliteRepo.NewTaskDraftRepository(appDB)
@@ -140,6 +142,8 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		complexTaskRepo = sqliteRepo.NewComplexTaskRepository(appDB)
 		externalIPSyncRepo = sqliteRepo.NewExternalIPSyncTaskRepository(appDB)
 		jobRunsRepo = sqliteRepo.NewJobRunsRepository(appDB)
+		approvalConfigRepo = sqliteRepo.NewApprovalConfigRepository(appDB)
+		approvalTaskRepo = sqliteRepo.NewApprovalTaskRepository(appDB)
 	}
 	if services == nil {
 		services = service.NewServices(
@@ -1722,8 +1726,19 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			if err := json.Unmarshal(body, &parsed); err != nil {
 				parsed = map[string]interface{}{"raw": string(body)}
 			}
+			// 根据飞书返回的 code 判断凭证是否有效（code=0 表示成功）
+			ok := resp.StatusCode >= 200 && resp.StatusCode < 300
+			if codeVal, exists := parsed["code"]; exists {
+				if code, isNumber := codeVal.(float64); isNumber {
+					ok = ok && code == 0
+				}
+			}
+			// 额外校验 token 字段是否存在，避免 code=0 但 token 为空的异常情况
+			if tokenVal, exists := parsed["tenant_access_token"]; !exists || tokenVal == nil || tokenVal == "" {
+				ok = false
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"ok":          true,
+				"ok":          ok,
 				"http_status": resp.StatusCode,
 				"response":    parsed,
 			})
@@ -1800,6 +1815,9 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			provider := webhook.NormalizeProvider(firstNonEmptyString(in["provider"], ""))
 			payload := in["payload"]
 			bodyTemplate := firstNonEmptyString(in["body_template"], "")
+			// 飞书机器人专属：消息类型与加签密钥
+			msgType := webhook.NormalizeFeishuMsgType(firstNonEmptyString(in["msg_type"], ""))
+			secret := strings.TrimSpace(firstNonEmptyString(in["secret"], ""))
 			timeoutSec := intFromAny(in["timeout_sec"])
 			if timeoutSec <= 0 {
 				timeoutSec = 10
@@ -1808,6 +1826,8 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			bodyBytes, err := webhook.BuildRequestBodyForTest(&storage.WebhookItem{
 				Provider: provider,
 				BodyTmpl: bodyTemplate,
+				MsgType:  msgType,
+				Secret:   secret,
 			}, payload)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
@@ -1832,12 +1852,14 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 			}
 
 			requestPreview := map[string]interface{}{
-				"url":          targetURL,
-				"method":       method,
-				"provider":     provider,
-				"headers":      cloneStringMap(headers),
-				"payload":      payload,
-				"request_body": string(bodyBytes),
+				"url":               targetURL,
+				"method":            method,
+				"provider":          provider,
+				"msg_type":          msgType,
+				"secret_configured": secret != "",
+				"headers":           cloneStringMap(headers),
+				"payload":           payload,
+				"request_body":      string(bodyBytes),
 			}
 
 			client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
@@ -3422,6 +3444,115 @@ func newRouter(cfg *config.Config, r *runner.Runner, services *service.Services)
 		// 前端按文档组装请求体，后端原样透传并把飞连原始响应返回给页面展示。
 		apiR.Post("/guest-wifi/apply", proxyGuestWifiRequest(cfg, configStore, guestWifiApplyPath))
 		apiR.Post("/guest-wifi/create", proxyGuestWifiRequest(cfg, configStore, guestWifiCreatePath))
+
+		// --- 小插件：自动化审批 ---
+		// Webhook 端点：接收飞书设备申报事件回调。
+		// 飞书要求 3 秒内返回，因此先响应再用 goroutine 异步处理。
+		apiR.Post("/approval/webhook", func(w http.ResponseWriter, req *http.Request) {
+			bodyBytes, err := io.ReadAll(req.Body)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "read body failed"})
+				return
+			}
+			var payload map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			// 飞书 URL 校验
+			if typ, _ := payload["type"].(string); typ == "url_verification" {
+				challenge, _ := payload["challenge"].(string)
+				writeJSON(w, http.StatusOK, map[string]interface{}{"challenge": challenge})
+				return
+			}
+			// 事件回调：立即响应，异步处理
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0})
+			if r != nil {
+				go func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							fmt.Printf("[approval webhook] panic recovered: %v\n", rec)
+						}
+					}()
+					_ = r.ProcessDeviceApplyEvent(context.Background(), payload)
+				}()
+			}
+		})
+
+		// 获取审批配置
+		apiR.Get("/approval/config", func(w http.ResponseWriter, req *http.Request) {
+			if approvalConfigRepo == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "db not ready"})
+				return
+			}
+			cfg, err := approvalConfigRepo.Get()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, cfg)
+		})
+
+		// 保存审批配置
+		apiR.Put("/approval/config", func(w http.ResponseWriter, req *http.Request) {
+			if approvalConfigRepo == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "db not ready"})
+				return
+			}
+			var cfg storage.ApprovalConfig
+			if err := json.NewDecoder(req.Body).Decode(&cfg); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid json"})
+				return
+			}
+			if err := approvalConfigRepo.Save(cfg); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		// 列出审批任务（可选 ?status=pending 过滤）
+		apiR.Get("/approval/tasks", func(w http.ResponseWriter, req *http.Request) {
+			if approvalTaskRepo == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "db not ready"})
+				return
+			}
+			status := req.URL.Query().Get("status")
+			tasks, err := approvalTaskRepo.List(status)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": tasks})
+		})
+
+		// 手动通过
+		apiR.Post("/approval/tasks/{id}/approve", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if r == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "runner not ready"})
+				return
+			}
+			if err := r.ApproveTask(req.Context(), id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
+
+		// 手动驳回
+		apiR.Post("/approval/tasks/{id}/reject", func(w http.ResponseWriter, req *http.Request) {
+			id := chi.URLParam(req, "id")
+			if r == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "runner not ready"})
+				return
+			}
+			if err := r.RejectTask(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		})
 	})
 
 	return rr, nil

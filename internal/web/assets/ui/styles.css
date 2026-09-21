@@ -960,6 +960,27 @@ input:focus, textarea:focus, select:focus{
 .config-subpage-detail{
   display:grid;
   gap:16px;
+  /* 关键：作为 .config-subpage-layout 的 grid 项，默认 min-width:auto 会使该 fr 轨道
+     被内容（如基础字段行三个 min-220 控件≈684px）撑开、在双栏布局下横向溢出并被裁切。
+     置 0 允许轨道正常收缩，内部 .row 随即按 flex-wrap 换行，保证 provider/method 始终可见。 */
+  min-width:0;
+}
+/* 详情卡片内的直接子区块（各 form-section）同样允许收缩，不被内容最小宽度反向撑开 */
+.config-subpage-detail > *{
+  min-width:0;
+}
+/* 详情内输入控件跟随容器宽度、可收缩，避免原生默认宽度造成横向溢出 */
+.config-subpage-detail input,
+.config-subpage-detail select,
+.config-subpage-detail textarea{
+  width:100%;
+  min-width:0;
+}
+/* 输出区强制换行：超长单行（如未格式化的 JSON）不再把整个卡片/布局撑到超宽 */
+.config-subpage-detail .pre{
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  word-break:break-word;
 }
 .config-subpage-detail .panel-head{
   flex-wrap: wrap;
@@ -1924,6 +1945,36 @@ select:focus-visible,
   color: #d97706;
 }
 .status-badge.status-unknown{
+  background: rgba(107,114,128,.1);
+  color: #6b7280;
+}
+
+/* 飞书可信设备导入状态徽章 */
+.job-row-name .status-badge{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.job-row-name .status-badge:before{
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .8;
+}
+.status-badge.status-imported{
+  background: rgba(16,185,129,.1);
+  color: #059669;
+}
+.status-badge.status-unimported{
   background: rgba(107,114,128,.1);
   color: #6b7280;
 }
@@ -3286,4 +3337,55 @@ select:focus-visible,
   #view-guest-wifi .guest-result-grid{
     grid-template-columns: 1fr;
   }
+}
+
+/* ===================== 自动化审批 ===================== */
+#view-approval .checkbox-group{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px;
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: 10px;
+  background: rgba(255,255,255,.6);
+  max-height: 220px;
+  overflow-y: auto;
+}
+#view-approval .approval-group-label{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+#view-approval .btn.small{
+  padding: 4px 10px;
+  font-size: 12px;
+}
+#view-approval .approval-badge{
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+#view-approval .approval-badge.badge-pending{
+  color: #8a6d1d;
+  border-color: rgba(214,168,46,.35);
+  background: rgba(240,190,60,.12);
+}
+#view-approval .approval-badge.badge-ok{
+  color: #1d6b3a;
+  border-color: rgba(58,160,92,.35);
+  background: rgba(72,187,120,.14);
+}
+#view-approval .approval-badge.badge-danger{
+  color: #a33;
+  border-color: rgba(242,109,125,.35);
+  background: rgba(242,109,125,.12);
+}
+#view-approval td.empty{
+  text-align: center;
+  color: #8b97a8;
+  padding: 24px 0;
 }

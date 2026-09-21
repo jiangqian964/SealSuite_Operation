@@ -16,3 +16,23 @@ items:
     retry_count: 1
     enabled: true
     created_at: "2026-06-08T00:00:00+08:00"
+
+  # 飞书自定义群机器人示例
+  - id: feishu_bot_example
+    name: 飞书群机器人
+    provider: feishu_bot
+    # 机器人创建后生成的 Webhook 地址（国内为 open.feishu.cn，海外为 open.larkoffice.com）
+    url: https://open.feishu.cn/open-apis/bot/v2/hook/REPLACE_WITH_HOOK_ID
+    method: POST
+    headers: {}
+    auth_type: ""
+    # feishu_bot 由系统自动生成 payload，body_template 留空即可
+    body_template: ""
+    # 消息类型：text（纯文本）/ post（富文本）/ interactive（交互卡片）
+    msg_type: interactive
+    # 机器人“安全设置 → 签名校验”启用时填写加签密钥；未启用签名校验请留空
+    secret: ""
+    timeout_sec: 10
+    retry_count: 1
+    enabled: false
+    created_at: "2026-06-08T00:00:00+08:00"

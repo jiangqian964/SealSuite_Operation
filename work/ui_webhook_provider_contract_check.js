@@ -8,6 +8,9 @@ const uiBundle = `${html}\n${js}`;
 [
   'id="webhook-provider"',
   'id="webhook-provider-hint"',
+  'id="webhook-feishu-section"',
+  'id="webhook-msg-type"',
+  'id="webhook-secret"',
 ].forEach((token) => {
   if (!html.includes(token)) failures.push(`missing html token: ${token}`);
 });
@@ -15,7 +18,8 @@ const uiBundle = `${html}\n${js}`;
 [
   "provider: 'generic'",
   'function renderWebhookProviderState(',
-  '系统将自动按飞书机器人格式生成 payload',
+  'function normalizeWebhookMsgType(',
+  '系统自动按飞书机器人协议生成',
 ].forEach((token) => {
   if (!js.includes(token)) failures.push(`missing js token: ${token}`);
 });

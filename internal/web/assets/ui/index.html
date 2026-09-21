@@ -86,6 +86,10 @@
           <span class="ico">◈</span>
           <span>访客WiFi申请</span>
         </button>
+        <button class="navbtn navbtn-sub" data-view="approval">
+          <span class="ico">✓</span>
+          <span>自动化审批</span>
+        </button>
       </nav>
 
       <main class="content">
@@ -476,17 +480,19 @@
                       </div>
                     </div>
                     <div class="row">
-                      <div class="field u-flex-2">
+                      <div class="field">
                         <label>url</label>
                         <input id="webhook-url" placeholder="https://example.com/webhook" />
                       </div>
-                    <div class="field">
-                      <label>provider</label>
-                      <select id="webhook-provider">
-                        <option value="generic" selected>generic</option>
-                        <option value="feishu_bot">feishu_bot</option>
-                      </select>
                     </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>provider</label>
+                        <select id="webhook-provider">
+                          <option value="generic" selected>generic</option>
+                          <option value="feishu_bot">feishu_bot</option>
+                        </select>
+                      </div>
                       <div class="field">
                         <label>method</label>
                         <select id="webhook-method">
@@ -494,6 +500,29 @@
                           <option value="PUT">PUT</option>
                           <option value="PATCH">PATCH</option>
                         </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-section hidden" id="webhook-feishu-section">
+                    <div class="section-head">
+                      <div>
+                        <div class="section-title">飞书机器人设置</div>
+                        <div class="subtitle">适用于飞书自定义群机器人（/open-apis/bot/v2/hook）。可选择消息类型；当机器人安全设置启用“签名校验”时填写加签密钥，系统会自动计算 timestamp 与 sign。</div>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <div class="field">
+                        <label>消息类型 msg-type</label>
+                        <select id="webhook-msg-type">
+                          <option value="text" selected>text 纯文本</option>
+                          <option value="post">post 富文本</option>
+                          <option value="interactive">interactive 交互卡片</option>
+                        </select>
+                      </div>
+                      <div class="field u-flex-2">
+                        <label>签名密钥 secret（可选）</label>
+                        <input id="webhook-secret" type="password" autocomplete="new-password" placeholder="机器人 安全设置 → 签名校验 → 加签密钥；未启用签名校验请留空" />
                       </div>
                     </div>
                   </div>
@@ -2128,6 +2157,93 @@
                 <pre id="guest-result-response" class="pre guest-pre">（暂无）</pre>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-approval">
+          <div class="page-title">
+            <div>
+              <h2>自动化审批</h2>
+              <div class="subtitle">监听飞书设备申报事件，命中白名单分组的设备自动通过（公司设备 + 信任设备），其余留存为待审批任务并推送 Webhook。</div>
+            </div>
+          </div>
+
+          <!-- 配置区 -->
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">审批配置</div>
+                <div class="subtitle">选择允许自动通过的设备分组（白名单）与待审批任务的 Webhook 推送目标。</div>
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label>
+                  <input type="checkbox" id="approval-enabled" />
+                  <span>启用自动化审批</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="approval-webhook">待审批推送 Webhook</label>
+                <select id="approval-webhook">
+                  <option value="">（不推送）</option>
+                </select>
+              </div>
+            </div>
+            <div class="field u-mt-16">
+              <label>白名单设备分组（多选，命中任一即自动通过）</label>
+              <div class="checkbox-group" id="approval-groups"></div>
+            </div>
+            <div class="row u-mt-16 u-gap-12">
+              <button class="btn primary" id="btn-approval-save-config">保存配置</button>
+              <button class="btn" id="btn-approval-refresh-groups">刷新分组列表</button>
+              <span class="subtitle" id="approval-config-hint"></span>
+            </div>
+          </div>
+
+          <!-- 任务列表 -->
+          <div class="card u-mt-16">
+            <div class="section-head">
+              <div>
+                <div class="section-title">审批任务</div>
+                <div class="subtitle">所有设备申报事件的处理流水，支持手动通过或驳回待审批任务。</div>
+              </div>
+              <div class="row u-gap-12">
+                <select id="approval-status-filter">
+                  <option value="">全部状态</option>
+                  <option value="pending">待审批</option>
+                  <option value="auto_approved">自动通过</option>
+                  <option value="approved">人工通过</option>
+                  <option value="rejected">已驳回</option>
+                </select>
+                <button class="btn" id="btn-approval-refresh-tasks">刷新</button>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table class="data-table" aria-label="审批任务列表">
+                <thead>
+                  <tr>
+                    <th scope="col">任务 ID</th>
+                    <th scope="col">设备标识</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">飞书设备记录 ID</th>
+                    <th scope="col">错误信息</th>
+                    <th scope="col">创建时间</th>
+                    <th scope="col">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="approval-tasks-body">
+                  <tr><td colspan="7" class="empty">加载中…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Webhook 地址提示 -->
+          <div class="card u-mt-16">
+            <div class="section-title">Webhook 回调地址</div>
+            <div class="subtitle">将以下地址配置到飞书事件订阅的请求地址中（事件类型：security_and_compliance.device_apply_record.device_apply_event_v2）：</div>
+            <pre class="pre" id="approval-webhook-url">（加载中）</pre>
           </div>
         </section>
       </main>

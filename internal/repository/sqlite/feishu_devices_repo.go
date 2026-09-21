@@ -40,7 +40,7 @@ func splitFilterList(v string) []string {
 }
 
 func (r *FeishuDevicesRepository) ListMulti(osList, trustedStatusList, groupList []string, logicMode string) ([]storage.FeishuDeviceItem, error) {
-	baseQuery := `SELECT did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type, mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default, hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name, groups_id, groups_name, groups_mode, device_type, trusted_status, created_at, updated_at FROM feishu_devices`
+	baseQuery := `SELECT did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type, mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default, hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name, groups_id, groups_name, groups_mode, device_type, trusted_status, feishu_device_record_id, created_at, updated_at FROM feishu_devices`
 	params := []interface{}{}
 	filters := []string{}
 
@@ -108,7 +108,7 @@ func (r *FeishuDevicesRepository) ListMulti(osList, trustedStatusList, groupList
 			&item.DeviceStatus, &item.NICType, &macAddrs, &isVM, &item.SerialNumber,
 			&item.MacAddr, &isVirtual, &isDefault, &hddSerials, &ssdSerials,
 			&cpuSerial, &memSerials, &windowsDomain, &item.GroupsID, &item.GroupsName, &item.GroupsMode,
-			&item.DeviceType, &item.TrustedStatus, &item.CreatedAt, &item.UpdatedAt,
+			&item.DeviceType, &item.TrustedStatus, &item.FeishuDeviceRecordID, &item.CreatedAt, &item.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -153,7 +153,7 @@ func (r *FeishuDevicesRepository) Get(did string) (*storage.FeishuDeviceItem, bo
 		windowsDomain sql.NullString
 	)
 	err := r.db.QueryRow(`
-		SELECT did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type, mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default, hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name, groups_id, groups_name, groups_mode, device_type, trusted_status, created_at, updated_at
+		SELECT did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type, mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default, hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name, groups_id, groups_name, groups_mode, device_type, trusted_status, feishu_device_record_id, created_at, updated_at
 		FROM feishu_devices
 		WHERE did = ?
 	`, strings.TrimSpace(did)).Scan(
@@ -162,7 +162,7 @@ func (r *FeishuDevicesRepository) Get(did string) (*storage.FeishuDeviceItem, bo
 		&item.DeviceStatus, &item.NICType, &macAddrs, &isVM, &item.SerialNumber,
 		&item.MacAddr, &isVirtual, &isDefault, &hddSerials, &ssdSerials,
 		&cpuSerial, &memSerials, &windowsDomain, &item.GroupsID, &item.GroupsName, &item.GroupsMode,
-		&item.DeviceType, &item.TrustedStatus, &item.CreatedAt, &item.UpdatedAt,
+		&item.DeviceType, &item.TrustedStatus, &item.FeishuDeviceRecordID, &item.CreatedAt, &item.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -201,8 +201,8 @@ func (r *FeishuDevicesRepository) Upsert(item storage.FeishuDeviceItem) error {
 			did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type,
 			mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default,
 			hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name,
-			groups_id, groups_name, groups_mode, device_type, trusted_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			groups_id, groups_name, groups_mode, device_type, trusted_status, feishu_device_record_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(did) DO UPDATE SET
 			user_id = excluded.user_id,
 			device_name = excluded.device_name,
@@ -229,6 +229,7 @@ func (r *FeishuDevicesRepository) Upsert(item storage.FeishuDeviceItem) error {
 			groups_mode = excluded.groups_mode,
 			device_type = excluded.device_type,
 			trusted_status = excluded.trusted_status,
+			feishu_device_record_id = COALESCE(NULLIF(excluded.feishu_device_record_id, ''), feishu_devices.feishu_device_record_id),
 			updated_at = excluded.updated_at
 	`,
 		item.DID, item.UserID, item.DeviceName, item.FullName, item.DepartmentName,
@@ -236,7 +237,7 @@ func (r *FeishuDevicesRepository) Upsert(item storage.FeishuDeviceItem) error {
 		item.DeviceStatus, item.NICType, item.MacAddrs, boolToInt(item.IsVM), item.SerialNumber,
 		item.MacAddr, boolToInt(item.IsVirtual), boolToInt(item.IsDefault),
 		item.HDDSerialNumbers, item.SSDSerialNumbers, item.CPUSerialNumber, item.MemSerialNumbers, item.WindowsADDomainName,
-		item.GroupsID, item.GroupsName, item.GroupsMode, item.DeviceType, item.TrustedStatus,
+		item.GroupsID, item.GroupsName, item.GroupsMode, item.DeviceType, item.TrustedStatus, item.FeishuDeviceRecordID,
 		item.CreatedAt, now,
 	)
 	return err
@@ -248,6 +249,18 @@ func (r *FeishuDevicesRepository) ReplaceAll(items []storage.FeishuDeviceItem) (
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// 全量同步前先备份已有设备的飞书 device_record_id，避免同步后丢失导入状态
+	recordIDMap := map[string]string{}
+	if rows, qErr := tx.Query(`SELECT did, feishu_device_record_id FROM feishu_devices WHERE feishu_device_record_id != ''`); qErr == nil {
+		for rows.Next() {
+			var did, rid string
+			if sErr := rows.Scan(&did, &rid); sErr == nil {
+				recordIDMap[did] = rid
+			}
+		}
+		_ = rows.Close()
+	}
 
 	if _, err := tx.Exec(`DELETE FROM feishu_devices`); err != nil {
 		return 0, err
@@ -263,20 +276,24 @@ func (r *FeishuDevicesRepository) ReplaceAll(items []storage.FeishuDeviceItem) (
 		if item.CreatedAt == "" {
 			item.CreatedAt = now
 		}
+		// 恢复该设备已有的飞书 device_record_id
+		if rid, ok := recordIDMap[item.DID]; ok && rid != "" {
+			item.FeishuDeviceRecordID = rid
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO feishu_devices (
 				did, user_id, device_name, full_name, department_name, os, client_ip, client_ip_location, device_status, nic_type,
 				mac_addrs, is_vm, serial_number, mac_addr, is_virtual, is_default,
 				hdd_serial_numbers, ssd_serial_numbers, cpu_serial_number, mem_serial_numbers, windows_ad_domain_name,
-				groups_id, groups_name, groups_mode, device_type, trusted_status, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				groups_id, groups_name, groups_mode, device_type, trusted_status, feishu_device_record_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			item.DID, item.UserID, item.DeviceName, item.FullName, item.DepartmentName,
 			item.OS, item.ClientIP, item.ClientIPLocation,
 			item.DeviceStatus, item.NICType, item.MacAddrs, boolToInt(item.IsVM), item.SerialNumber,
 			item.MacAddr, boolToInt(item.IsVirtual), boolToInt(item.IsDefault),
 			item.HDDSerialNumbers, item.SSDSerialNumbers, item.CPUSerialNumber, item.MemSerialNumbers, item.WindowsADDomainName,
-			item.GroupsID, item.GroupsName, item.GroupsMode, item.DeviceType, item.TrustedStatus,
+			item.GroupsID, item.GroupsName, item.GroupsMode, item.DeviceType, item.TrustedStatus, item.FeishuDeviceRecordID,
 			item.CreatedAt, now,
 		); err != nil {
 			return count, err
@@ -293,6 +310,13 @@ func (r *FeishuDevicesRepository) ReplaceAll(items []storage.FeishuDeviceItem) (
 func (r *FeishuDevicesRepository) UpdateTrustedStatus(did, trustedStatus string) error {
 	_, err := r.db.Exec(`UPDATE feishu_devices SET trusted_status = ?, updated_at = ? WHERE did = ?`,
 		trustedStatus, time.Now().Format(time.RFC3339), strings.TrimSpace(did))
+	return err
+}
+
+// UpdateFeishuDeviceRecordID 更新设备对应的飞书 device_record_id，用于标记已导入及后续更新
+func (r *FeishuDevicesRepository) UpdateFeishuDeviceRecordID(did, recordID string) error {
+	_, err := r.db.Exec(`UPDATE feishu_devices SET feishu_device_record_id = ?, updated_at = ? WHERE did = ?`,
+		strings.TrimSpace(recordID), time.Now().Format(time.RFC3339), strings.TrimSpace(did))
 	return err
 }
 

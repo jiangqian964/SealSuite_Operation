@@ -476,6 +476,29 @@ func Migrate(db *sql.DB) error {
 			stats_schedule_enabled INTEGER NOT NULL DEFAULT 1,
 			analysis_schedule_enabled INTEGER NOT NULL DEFAULT 1
 		);`,
+		// 自动化审批：白名单分组与待审批 Webhook 配置（单行配置，id 固定为 1）
+		`CREATE TABLE IF NOT EXISTS approval_config (
+			id INTEGER PRIMARY KEY,
+			group_ids_json TEXT NOT NULL DEFAULT '[]',
+			webhook_id TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL DEFAULT ''
+		);`,
+		// 自动化审批：设备申报任务流水
+		`CREATE TABLE IF NOT EXISTS approval_tasks (
+			id TEXT PRIMARY KEY,
+			event_id TEXT NOT NULL DEFAULT '',
+			device_identifier TEXT NOT NULL DEFAULT '',
+			raw_payload_json TEXT NOT NULL DEFAULT '{}',
+			status TEXT NOT NULL DEFAULT 'pending',
+			feishu_device_record_id TEXT NOT NULL DEFAULT '',
+			webhook_delivery_json TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_tasks_event_id ON approval_tasks(event_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_tasks_status ON approval_tasks(status);`,
 	}
 
 	for _, stmt := range stmts {
@@ -514,6 +537,18 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumnExists(db, "feishu_devices", "mem_serial_numbers", "TEXT"); err != nil {
+		return err
+	}
+	// 飞书设备记录 ID：用于标记该设备是否已导入飞书，以及更新时的 device_record_id
+	if err := ensureColumnExists(db, "feishu_devices", "feishu_device_record_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// webhooks 表扩展：支持飞书自定义群机器人的加签密钥与消息类型（text/post/interactive）
+	if err := ensureColumnExists(db, "webhooks", "secret", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumnExists(db, "webhooks", "msg_type", "TEXT NOT NULL DEFAULT 'text'"); err != nil {
 		return err
 	}
 
